@@ -82,20 +82,21 @@ class RenderToggleCallback(BaseCallback):
         return True
 
 
-def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False):
+def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50):
     """Train a reinforcement learning agent for ball balancing"""
     
-    # Create environment with optional rendering
+    # Create environment with optional rendering and specified control frequency
     if render_training:
-        env = BallBalanceEnv(render_mode="human")
+        env = BallBalanceEnv(render_mode="human", control_freq=control_freq)
         print("🎬 Training with visual rendering enabled")
     else:
-        env = BallBalanceEnv(render_mode="rgb_array")  # No visual rendering for speed
+        env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq)  # No visual rendering for speed
         print("⚡ Training without visual rendering for maximum speed")
+    print(f"⏱️ Control frequency: {control_freq} Hz")
     env = Monitor(env)
     
     # Create evaluation environment (without rendering for speed)
-    eval_env = BallBalanceEnv(render_mode="rgb_array")
+    eval_env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq)
     eval_env = Monitor(eval_env)
     
     # Create model with stability-focused hyperparameters
@@ -137,8 +138,11 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     # Always add evaluation callback
     if use_early_stopping:
-        # Create early stopping callback first
-        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=2500.0, verbose=1)
+        # Create early stopping callback first - adjusted threshold for new timing
+        # With 50 Hz control instead of 240 Hz, episodes are slower so adjust threshold
+        reward_threshold = 2500.0 if control_freq >= 50 else 1500.0
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
+        print(f"Early stopping threshold: {reward_threshold} (adjusted for {control_freq} Hz control)")
         
         # Create eval callback with early stopping
         eval_callback = EvalCallback(
@@ -192,14 +196,15 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     return model
 
 
-def test_trained_agent(model_path="models/ball_balance_ppo_final"):
+def test_trained_agent(model_path="models/ball_balance_ppo_final", control_freq=50):
     """Test a trained agent"""
     
     # Load the model
     model = PPO.load(model_path)
     
-    # Create test environment with rendering
-    env = BallBalanceEnv(render_mode="human")
+    # Create test environment with rendering and matching control frequency
+    env = BallBalanceEnv(render_mode="human", control_freq=control_freq)
+    print(f"Testing with {control_freq} Hz control frequency")
     
     print("Testing trained agent. Press Ctrl+C to stop.")
     
@@ -235,6 +240,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume-from", type=str, help="Resume training from specific checkpoint")
     parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")
     parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")
+    parser.add_argument("--freq", type=int, default=50, help="Control frequency in Hz (default: 50)")
     
     args = parser.parse_args()
     
@@ -255,9 +261,11 @@ if __name__ == "__main__":
             from recovery_tool import resume_training_from_checkpoint
             resume_training_from_checkpoint(args.resume_from)
         else:
-            train_rl_agent(use_early_stopping=not args.no_early_stop, render_training=render_training)
+            train_rl_agent(use_early_stopping=not args.no_early_stop, 
+                          render_training=render_training, 
+                          control_freq=args.freq)
     elif args.mode == "recover":
         from recovery_tool import rollback_to_checkpoint
         rollback_to_checkpoint()
     else:
-        test_trained_agent(args.model)
+        test_trained_agent(args.model, control_freq=args.freq)

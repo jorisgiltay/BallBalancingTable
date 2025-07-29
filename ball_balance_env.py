@@ -21,7 +21,7 @@ class BallBalanceEnv(gym.Env):
     - Table roll angle change
     """
     
-    def __init__(self, render_mode="human", max_steps=2000):
+    def __init__(self, render_mode="human", max_steps=2000, control_freq=50):
         super().__init__()
         
         self.render_mode = render_mode
@@ -40,8 +40,14 @@ class BallBalanceEnv(gym.Env):
             dtype=np.float32
         )
         
+        # Timing parameters
+        self.physics_freq = 240  # Hz - physics simulation frequency
+        self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
+        self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
+        self.control_dt = 1.0 / self.control_freq  # Control timestep
+        self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
+        
         # Physics parameters
-        self.dt = 1.0 / 240.0
         self.ball_radius = 0.02
         self.table_size = 0.25
         
@@ -49,6 +55,7 @@ class BallBalanceEnv(gym.Env):
         self.table_pitch = 0.0
         self.table_roll = 0.0
         self.prev_ball_pos = None  # For velocity estimation
+        self.prev_observation_time = None  # For proper velocity estimation timing
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Track action history for oscillation detection
@@ -67,6 +74,7 @@ class BallBalanceEnv(gym.Env):
         self.table_pitch = 0.0
         self.table_roll = 0.0
         self.prev_ball_pos = None  # Reset for velocity estimation
+        self.prev_observation_time = None  # Reset timing for velocity estimation
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
@@ -162,10 +170,11 @@ class BallBalanceEnv(gym.Env):
         quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
         p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
         
-        # Step simulation
-        p.stepSimulation()
-        if self.render_mode == "human":
-            time.sleep(self.dt)
+        # Step simulation multiple times to maintain proper physics frequency
+        for _ in range(self.physics_steps_per_control):
+            p.stepSimulation()
+            if self.render_mode == "human":
+                time.sleep(self.physics_dt)
         
         # Get new observation
         observation = self._get_observation()
@@ -186,11 +195,12 @@ class BallBalanceEnv(gym.Env):
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # Estimate velocity from position differences (realistic approach)
+        # Estimate velocity from position differences using actual control timestep
         ball_vx, ball_vy = 0.0, 0.0
         if self.prev_ball_pos is not None:
-            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
-            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
+            # Use control timestep for proper velocity estimation
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.control_dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.control_dt
         
         # Update previous position for next velocity calculation
         self.prev_ball_pos = [ball_x, ball_y]
@@ -227,13 +237,13 @@ class BallBalanceEnv(gym.Env):
         # 4. Moderate penalty for large table angles
         angle_penalty = -(abs(table_pitch) + abs(table_roll)) * 0.3
         
-        # 5. Light penalty for large actions (servo-friendly)
-        action_magnitude_penalty = -(abs(action[0]) + abs(action[1])) * 0.5
+        # 5. Moderate penalty for large actions (servo-friendly) - balanced for learning
+        action_magnitude_penalty = -(abs(action[0]) + abs(action[1])) * 1.0
         
-        # 6. Light penalty for rapid angle changes (smooth movement)
+        # 6. Moderate penalty for rapid angle changes (smooth movement) - balanced for learning
         angle_change_pitch = abs(table_pitch - self.prev_table_pitch)
         angle_change_roll = abs(table_roll - self.prev_table_roll)
-        smooth_movement_penalty = -(angle_change_pitch + angle_change_roll) * 1.0
+        smooth_movement_penalty = -(angle_change_pitch + angle_change_roll) * 1.5
         
         # 7. Special reward for being very close to center AND stable
         if distance_from_center < 0.05 and velocity_magnitude < 0.1:
@@ -241,7 +251,7 @@ class BallBalanceEnv(gym.Env):
         else:
             stability_bonus = 0.0
         
-        # 8. STRONG penalty for oscillating behavior (detect sign flipping)
+        # 8. Strong penalty for oscillating behavior (detect sign flipping)
         oscillation_penalty = 0.0
         if len(self.prev_actions) >= 3:  # Need at least 3 actions to detect oscillation
             # Check for sign flipping in recent actions
@@ -259,7 +269,9 @@ class BallBalanceEnv(gym.Env):
             max_actions = np.abs(recent_actions) > 0.04  # Near maximum action
             
             if (pitch_oscillating or roll_oscillating) and np.any(max_actions):
-                oscillation_penalty = -2.0  # Heavy penalty for oscillating at max
+                oscillation_penalty = -2.0  # Moderate penalty for oscillating at max
+            elif (pitch_oscillating or roll_oscillating):
+                oscillation_penalty = -0.5  # Light penalty for any oscillation
                 
         # 9. Reward for action consistency (small, similar actions over time)
         action_consistency_bonus = 0.0
@@ -268,10 +280,17 @@ class BallBalanceEnv(gym.Env):
             action_similarity = 1.0 - np.mean(np.abs(action - self.prev_actions[-1]))
             action_consistency_bonus = action_similarity * 0.3
             
-        # 10. Special penalty for using maximum actions repeatedly
+        # 10. Moderate penalty for using maximum actions repeatedly
         max_action_penalty = 0.0
         if np.any(np.abs(action) > 0.045):  # Close to maximum action space
-            max_action_penalty = -0.5
+            max_action_penalty = -0.8  # Moderate penalty
+            
+        # 11. Additional penalty for repeated maximum actions
+        repeated_max_penalty = 0.0
+        if len(self.prev_actions) >= 3:
+            recent_max_actions = [np.any(np.abs(a) > 0.045) for a in self.prev_actions[-3:]]
+            if all(recent_max_actions):  # All recent actions were max
+                repeated_max_penalty = -1.0  # Moderate penalty for sustained max actions
         
         # 11. Large penalty if ball falls off table
         if distance_from_center > self.table_size:
@@ -283,7 +302,7 @@ class BallBalanceEnv(gym.Env):
         total_reward = (position_reward + position_penalty + velocity_reward + 
                        angle_penalty + action_magnitude_penalty + smooth_movement_penalty + 
                        stability_bonus + oscillation_penalty + action_consistency_bonus + 
-                       max_action_penalty + time_bonus)
+                       max_action_penalty + repeated_max_penalty + time_bonus)
         
         return total_reward
     

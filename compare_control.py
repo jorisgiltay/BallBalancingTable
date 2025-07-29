@@ -12,8 +12,15 @@ class BallBalanceComparison:
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid"):
+    def __init__(self, control_method="pid", control_freq=50):
         self.control_method = control_method
+        self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
+        
+        # Timing parameters
+        self.physics_freq = 240  # Hz - physics simulation frequency
+        self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
+        self.control_dt = 1.0 / self.control_freq  # Control timestep
+        self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
         
         # PID controllers (create these BEFORE setup_simulation)
         self.pitch_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
@@ -71,8 +78,6 @@ class BallBalanceComparison:
         # Ball
         self.ball_radius = 0.02
         self.reset_ball()
-        
-        self.dt = 1.0 / 240.0
         
     def reset_ball(self, position=None, randomize=True):
         """Reset ball to initial position"""
@@ -157,16 +162,17 @@ class BallBalanceComparison:
             self.control_method = "pid"
     
     def get_observation(self):
-        """Get current state observation for RL - with estimated velocity"""
+        """Get current state observation for RL - with estimated velocity using proper control timestep"""
         # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # Estimate velocity from position differences (realistic approach)
+        # Estimate velocity from position differences using control timestep
         ball_vx, ball_vy = 0.0, 0.0
         if self.prev_ball_pos is not None:
-            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
-            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
+            # Use control timestep for proper velocity estimation
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.control_dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.control_dt
         
         # Update previous position for next velocity calculation
         self.prev_ball_pos = [ball_x, ball_y]
@@ -181,8 +187,9 @@ class BallBalanceComparison:
     def pid_control(self, ball_x, ball_y, ball_vx, ball_vy):
         """PID control logic with estimated velocity available (but not used in basic PID)"""
         # Basic PID uses only position error, but velocity is available if needed
-        pitch_angle = -self.pitch_pid.update(ball_y, self.dt)
-        roll_angle = self.roll_pid.update(ball_x, self.dt)
+        # Use control timestep for PID updates
+        pitch_angle = -self.pitch_pid.update(ball_y, self.control_dt)
+        roll_angle = self.roll_pid.update(ball_x, self.control_dt)
         return pitch_angle, roll_angle
     
     def rl_control(self, observation):
@@ -191,12 +198,17 @@ class BallBalanceComparison:
             return 0.0, 0.0
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
-        print(f"RL action: {action}")
+        # Only print RL actions occasionally to avoid spam
+        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+            print(f"RL action: {action}")
         return action[0], action[1]  # pitch_change, roll_change
     
     def run_simulation(self):
-        """Main simulation loop"""
+        """Main simulation loop with configurable control rate"""
         print(f"Running simulation with {self.control_method.upper()} control")
+        print(f"Control frequency: {self.control_freq} Hz")
+        print(f"Physics frequency: {self.physics_freq} Hz")
+        print(f"Physics steps per control: {self.physics_steps_per_control}")
         print("Controls:")
         print("  'r' - Reset ball")
         print("  'f' - Toggle fixed/random ball position")
@@ -205,61 +217,87 @@ class BallBalanceComparison:
         print("  'q' - Quit")
         print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
+        physics_step_count = 0  # Track physics steps
+        
         while True:
-            # Get observation (includes position + estimated velocity)
-            observation = self.get_observation()
-            ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
+            # Only run control logic at the specified control frequency
+            if physics_step_count % self.physics_steps_per_control == 0:
+                # Get observation (includes position + estimated velocity)
+                observation = self.get_observation()
+                ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
+                
+                # Get ball height for collision detection
+                ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+                ball_z = ball_pos[2]
+                
+                # Control logic - runs at control frequency
+                if self.control_method == "pid":
+                    pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
+                    # For PID, these are absolute angles
+                    self.table_pitch = pitch_angle
+                    self.table_roll = roll_angle
+                else:  # RL
+                    pitch_change, roll_change = self.rl_control(observation)
+                    # For RL, these are angle changes
+                    self.table_pitch += pitch_change
+                    self.table_roll += roll_change
+                    # Clip to reasonable limits
+                    self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
+                    self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
+                
+                # Update table orientation
+                quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
+                p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
+                
+                # Check if ball fell off
+                distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
+                if distance_from_center > 0.25 or ball_z < 0.05:
+                    print(f"Ball fell off after {self.step_count} control steps. Resetting...")
+                    self.reset_ball(randomize=self.randomize_ball)
+                    physics_step_count = 0  # Reset physics step counter
+                    continue
+                
+                # Print status every control_freq control steps (1 second)
+                if self.step_count % self.control_freq == 0:
+                    print(f"Control Step: {self.step_count}, Method: {self.control_method.upper()}, "
+                          f"Ball pos: ({ball_x:.3f}, {ball_y:.3f}), "
+                          f"Distance: {distance_from_center:.3f}, "
+                          f"Table: ({self.table_pitch:.3f}, {self.table_roll:.3f})")
+                
+                self.step_count += 1
             
-            # Get ball height for collision detection
-            ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-            ball_z = ball_pos[2]
-            
-            # Control logic
-            if self.control_method == "pid":
-                pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
-                # For PID, these are absolute angles
-                self.table_pitch = pitch_angle
-                self.table_roll = roll_angle
-            else:  # RL
-                pitch_change, roll_change = self.rl_control(observation)
-                # For RL, these are angle changes
-                self.table_pitch += pitch_change
-                self.table_roll += roll_change
-                # Clip to reasonable limits
-                self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
-                self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
-            
-            # Update table orientation
-            quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
-            p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
-            
-            # Handle keyboard input
+            # Handle keyboard input (check every physics step for responsiveness)
             keys = p.getKeyboardEvents()
             for key, state in keys.items():
                 if state & p.KEY_WAS_TRIGGERED:
                     if key == ord('r'):
                         print("Resetting ball...")
                         self.reset_ball(randomize=self.randomize_ball)
+                        physics_step_count = 0  # Reset physics step counter
                     elif key == ord('f'):
                         self.randomize_ball = not self.randomize_ball
                         mode = "Random" if self.randomize_ball else "Fixed"
                         print(f"Ball position mode: {mode}")
                         self.reset_ball(randomize=self.randomize_ball)
+                        physics_step_count = 0  # Reset physics step counter
                     elif key == ord('p'):
                         print("Switching to PID control")
                         self.control_method = "pid"
                         self.reset_ball(randomize=self.randomize_ball)
+                        physics_step_count = 0  # Reset physics step counter
                     elif key == ord('l'):
                         print("Switching to RL control")
                         if self.rl_model is not None:
                             self.control_method = "rl"
                             self.reset_ball(randomize=self.randomize_ball)
+                            physics_step_count = 0  # Reset physics step counter
                         else:
                             print("RL model not available. Attempting to load...")
                             self.load_rl_model()
                             if self.rl_model is not None:
                                 self.control_method = "rl"
                                 self.reset_ball(randomize=self.randomize_ball)
+                                physics_step_count = 0  # Reset physics step counter
                                 print("✅ RL control activated!")
                             else:
                                 print("❌ Still no RL model available")
@@ -267,32 +305,22 @@ class BallBalanceComparison:
                         print("Quitting...")
                         return
             
-            # Check if ball fell off
-            distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-            if distance_from_center > 0.25 or ball_z < 0.05:
-                print(f"Ball fell off after {self.step_count} steps. Resetting...")
-                self.reset_ball(randomize=self.randomize_ball)
-            
-            # Print status every 240 steps (1 second)
-            if self.step_count % 240 == 0:
-                print(f"Step: {self.step_count}, Method: {self.control_method.upper()}, "
-                      f"Ball pos: ({ball_x:.3f}, {ball_y:.3f}), "
-                      f"Distance: {distance_from_center:.3f}, "
-                      f"Table: ({self.table_pitch:.3f}, {self.table_roll:.3f})")
-            
+            # Always step physics at physics frequency
             p.stepSimulation()
-            time.sleep(self.dt)
-            self.step_count += 1
+            time.sleep(self.physics_dt)
+            physics_step_count += 1
 
 
 def main():
     parser = argparse.ArgumentParser(description="Ball Balancing Control Comparison")
     parser.add_argument("--control", choices=["pid", "rl"], default="pid", 
                        help="Control method to start with")
+    parser.add_argument("--freq", type=int, default=50,
+                       help="Control frequency in Hz (default: 50)")
     
     args = parser.parse_args()
     
-    simulator = BallBalanceComparison(control_method=args.control)
+    simulator = BallBalanceComparison(control_method=args.control, control_freq=args.freq)
     
     try:
         simulator.run_simulation()
