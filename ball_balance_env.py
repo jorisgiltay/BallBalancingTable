@@ -12,7 +12,8 @@ class BallBalanceEnv(gym.Env):
     Reinforcement Learning Environment for Ball Balancing Table
     
     Observation Space:
-    - Ball position (x, y) - POSITION ONLY like PID for fair comparison
+    - Ball position (x, y) - from camera/sensor
+    - Ball velocity (vx, vy) - estimated from position differences (realistic)
     - Table angles (pitch, roll)
     
     Action Space:
@@ -32,10 +33,10 @@ class BallBalanceEnv(gym.Env):
             low=-0.05, high=0.05, shape=(2,), dtype=np.float32
         )
         
-        # Observation space: [ball_x, ball_y, table_pitch, table_roll] - POSITION ONLY
+        # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll] - ESTIMATED VELOCITY
         self.observation_space = spaces.Box(
-            low=np.array([-0.3, -0.3, -0.1, -0.1]),
-            high=np.array([0.3, 0.3, 0.1, 0.1]),
+            low=np.array([-0.3, -0.3, -2.0, -2.0, -0.1, -0.1]),
+            high=np.array([0.3, 0.3, 2.0, 2.0, 0.1, 0.1]),
             dtype=np.float32
         )
         
@@ -47,7 +48,7 @@ class BallBalanceEnv(gym.Env):
         # State tracking
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None
+        self.prev_ball_pos = None  # For velocity estimation
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Track action history for oscillation detection
@@ -65,7 +66,7 @@ class BallBalanceEnv(gym.Env):
         self.current_step = 0
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None
+        self.prev_ball_pos = None  # Reset for velocity estimation
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
@@ -181,25 +182,30 @@ class BallBalanceEnv(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def _get_observation(self):
-        # Ball position and orientation
+        # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # POSITION ONLY - no velocity like PID controller
+        # Estimate velocity from position differences (realistic approach)
+        ball_vx, ball_vy = 0.0, 0.0
+        if self.prev_ball_pos is not None:
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
+        
+        # Update previous position for next velocity calculation
+        self.prev_ball_pos = [ball_x, ball_y]
+        
+        # Return position + estimated velocity + table angles
         observation = np.array([
-            ball_x, ball_y, self.table_pitch, self.table_roll
+            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
         
         return observation
     
     def _calculate_reward(self, observation, action):
-        ball_x, ball_y, table_pitch, table_roll = observation  # Updated for position-only
+        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation  # Updated for 6D format with estimated velocity
         
-        # Calculate velocity manually from position differences (like real camera tracking)
-        ball_vx, ball_vy = 0.0, 0.0
-        if self.prev_ball_pos is not None:
-            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
-            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
+        # Velocity is now included in observation (estimated from position differences)
         
         # Update previous position for next step
         self.prev_ball_pos = [ball_x, ball_y]
@@ -282,7 +288,7 @@ class BallBalanceEnv(gym.Env):
         return total_reward
     
     def _is_terminated(self, observation):
-        ball_x, ball_y, _, _ = observation  # Updated for position-only
+        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation  # Updated for 6D format
         
         # Check if ball fell off the table
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)

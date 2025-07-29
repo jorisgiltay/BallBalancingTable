@@ -29,6 +29,7 @@ class BallBalanceComparison:
         # State tracking
         self.table_pitch = 0.0
         self.table_roll = 0.0
+        self.prev_ball_pos = None  # For velocity estimation  
         self.step_count = 0
         self.randomize_ball = True  # Start with randomized positions
         
@@ -104,6 +105,7 @@ class BallBalanceComparison:
         self.roll_pid.reset()
         self.table_pitch = 0.0
         self.table_roll = 0.0
+        self.prev_ball_pos = None  # Reset velocity estimation
         self.step_count = 0
         
         # Let ball settle
@@ -155,20 +157,30 @@ class BallBalanceComparison:
             self.control_method = "pid"
     
     def get_observation(self):
-        """Get current state observation for RL - POSITION ONLY like PID"""
-        # Ball position and orientation
+        """Get current state observation for RL - with estimated velocity"""
+        # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # POSITION ONLY - no velocity for fair comparison with PID
+        # Estimate velocity from position differences (realistic approach)
+        ball_vx, ball_vy = 0.0, 0.0
+        if self.prev_ball_pos is not None:
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
+        
+        # Update previous position for next velocity calculation
+        self.prev_ball_pos = [ball_x, ball_y]
+        
+        # Return position + estimated velocity + table angles (6D like RL environment)
         observation = np.array([
-            ball_x, ball_y, self.table_pitch, self.table_roll
+            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
         
         return observation
     
-    def pid_control(self, ball_x, ball_y):
-        """PID control logic"""
+    def pid_control(self, ball_x, ball_y, ball_vx, ball_vy):
+        """PID control logic with estimated velocity available (but not used in basic PID)"""
+        # Basic PID uses only position error, but velocity is available if needed
         pitch_angle = -self.pitch_pid.update(ball_y, self.dt)
         roll_angle = self.roll_pid.update(ball_x, self.dt)
         return pitch_angle, roll_angle
@@ -194,18 +206,21 @@ class BallBalanceComparison:
         print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
         while True:
-            # Get ball position
+            # Get observation (includes position + estimated velocity)
+            observation = self.get_observation()
+            ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
+            
+            # Get ball height for collision detection
             ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-            ball_x, ball_y, ball_z = ball_pos
+            ball_z = ball_pos[2]
             
             # Control logic
             if self.control_method == "pid":
-                pitch_angle, roll_angle = self.pid_control(ball_x, ball_y)
+                pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                 # For PID, these are absolute angles
                 self.table_pitch = pitch_angle
                 self.table_roll = roll_angle
             else:  # RL
-                observation = self.get_observation()
                 pitch_change, roll_change = self.rl_control(observation)
                 # For RL, these are angle changes
                 self.table_pitch += pitch_change
