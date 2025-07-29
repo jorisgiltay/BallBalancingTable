@@ -31,18 +31,18 @@ class BallDetector:
     
     def __init__(self):
         # HSV color range for white ping pong ball detection
-        # These values may need tuning based on lighting conditions
-        self.lower_white = np.array([0, 0, 200])    # Lower HSV bound for white
-        self.upper_white = np.array([180, 30, 255]) # Upper HSV bound for white
+        # These values are tuned for better stationary ball detection
+        self.lower_white = np.array([0, 0, 180])    # Lower brightness threshold
+        self.upper_white = np.array([180, 50, 255]) # Higher saturation tolerance
         
         # Alternative: Orange ball detection (uncomment if using orange ball)
         # self.lower_orange = np.array([10, 100, 100])
         # self.upper_orange = np.array([25, 255, 255])
         
-        # Contour filtering parameters
-        self.min_contour_area = 100     # Minimum area for ball contour
-        self.max_contour_area = 5000    # Maximum area for ball contour
-        self.circularity_threshold = 0.7  # How circular the contour should be
+        # Contour filtering parameters - More flexible for better detection
+        self.min_contour_area = 50       # Smaller minimum area
+        self.max_contour_area = 8000     # Larger maximum area
+        self.circularity_threshold = 0.6  # More lenient circularity
         
     def detect_ball(self, color_frame: np.ndarray, depth_frame: Optional[np.ndarray] = None) -> Optional[Tuple[float, float, float]]:
         """
@@ -147,6 +147,9 @@ class RealSenseCameraInterface:
         self.latest_position = (0.0, 0.0, 0.0)
         self.position_lock = threading.Lock()
         
+        # Try to load existing calibration data
+        self.load_existing_calibration()
+        
     def initialize_camera(self, width: int = 640, height: int = 480, fps: int = 30) -> bool:
         """
         Initialize the RealSense camera
@@ -198,6 +201,49 @@ class RealSenseCameraInterface:
             print(f"❌ Failed to initialize RealSense camera: {e}")
             return False
     
+    def load_existing_calibration(self) -> bool:
+        """
+        Load existing calibration data from ball_detection_test calibration
+        
+        Returns:
+            True if calibration loaded successfully
+        """
+        import os
+        import json
+        
+        calib_dir = "calibration_data"
+        if not os.path.exists(calib_dir):
+            return False
+        
+        # Find latest calibration file
+        json_files = [f for f in os.listdir(calib_dir) if f.startswith("calibration_") and f.endswith(".json")]
+        
+        if not json_files:
+            return False
+        
+        # Sort by timestamp (filename contains timestamp)
+        latest_file = sorted(json_files)[-1]
+        json_path = os.path.join(calib_dir, latest_file)
+        
+        try:
+            with open(json_path, 'r') as f:
+                calib_data = json.load(f)
+            
+            self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
+            
+            # Flip calibration corners to match flipped image orientation
+            # When image is rotated 180°, coordinates transform: (x,y) -> (640-x, 480-y)
+            self.table_corners_pixels[:, 0] = 640 - self.table_corners_pixels[:, 0]  # Flip X
+            self.table_corners_pixels[:, 1] = 480 - self.table_corners_pixels[:, 1]  # Flip Y
+            
+            print(f"✅ Loaded existing calibration from: {latest_file}")
+            print(f"📐 Table corners loaded and flipped: {self.table_corners_pixels.shape}")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Failed to load existing calibration: {e}")
+            return False
+    
     def calibrate_table_detection(self, num_samples: int = 10) -> bool:
         """
         Calibrate the camera by detecting table corners
@@ -232,6 +278,9 @@ class RealSenseCameraInterface:
                     
                 # Convert to numpy array
                 color_image = np.asanyarray(color_frame.get_data())
+                
+                # Always flip image 180 degrees for correct camera orientation
+                color_image = cv2.rotate(color_image, cv2.ROTATE_180)
                 
                 # Detect table corners (you'll need to implement this based on your table)
                 corners = self._detect_table_corners(color_image)
@@ -384,6 +433,11 @@ class RealSenseCameraInterface:
                 # Convert to numpy arrays
                 color_image = np.asanyarray(color_frame.get_data())
                 depth_image = np.asanyarray(depth_frame.get_data()) if depth_frame else None
+                
+                # Always flip image 180 degrees for correct camera orientation
+                color_image = cv2.rotate(color_image, cv2.ROTATE_180)
+                if depth_image is not None:
+                    depth_image = cv2.rotate(depth_image, cv2.ROTATE_180)
                 
                 # Detect ball
                 ball_position = self.ball_detector.detect_ball(color_image, depth_image)
