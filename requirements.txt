@@ -1,2 +1,7 @@
 pybullet==3.2.7
 numpy==1.23.5
+gymnasium==0.29.1
+stable-baselines3[extra]==2.2.1
+torch==2.1.0
+tensorboard==2.15.1
+matplotlib==3.7.1
