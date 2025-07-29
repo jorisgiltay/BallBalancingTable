@@ -69,9 +69,9 @@ class BallBalanceComparison:
             basePosition=[0, 0, 0.02],
         )
         
-        # Table
-        table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.004])
-        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.25, 0.25, 0.004], rgbaColor=[0.0, 0.0, 0.0, 1])
+        # Table - 25cm x 25cm (halfExtents = total_size / 2)
+        table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004])
+        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004], rgbaColor=[0.0, 0.0, 0.0, 1])
         self.table_start_pos = [0, 0, 0.06]
         self.table_id = p.createMultiBody(1.0, table_shape, table_visual, self.table_start_pos)
         
@@ -83,16 +83,16 @@ class BallBalanceComparison:
         """Reset ball to initial position"""
         if position is None:
             if randomize:
-                # Random position like in RL training
+                # Random position like in RL training - adjusted for 25cm table
                 position = [
-                    np.random.uniform(-0.15, 0.15),
-                    np.random.uniform(-0.15, 0.15),
+                    np.random.uniform(-0.11, 0.11),  # Stay within 22cm range for safety
+                    np.random.uniform(-0.11, 0.11),
                     0.5
                 ]
                 print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
             else:
-                # Fixed position for consistent testing
-                position = [0.12, 0.15, 0.5]  # Default position
+                # Fixed position for consistent testing - adjusted for 25cm table
+                position = [0.08, 0.10, 0.5]  # Smaller default position
                 print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
             
         if hasattr(self, 'ball_id'):
@@ -199,8 +199,8 @@ class BallBalanceComparison:
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
         # Only print RL actions occasionally to avoid spam
-        # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
-        print(f"RL action: {action}")
+        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+            print(f"RL action: {action}")
         return action[0], action[1]  # pitch_change, roll_change
     
     def run_simulation(self):
@@ -249,9 +249,9 @@ class BallBalanceComparison:
                 quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
                 p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 
-                # Check if ball fell off
+                # Check if ball fell off - 25cm table (radius = 0.125m)
                 distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                if distance_from_center > 0.25 or ball_z < 0.05:
+                if distance_from_center > 0.125 or ball_z < 0.05:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")
                     self.reset_ball(randomize=self.randomize_ball)
                     physics_step_count = 0  # Reset physics step counter

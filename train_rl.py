@@ -99,26 +99,26 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     eval_env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq)
     eval_env = Monitor(eval_env)
     
-    # Create model with tuned hyperparameters for the new reward function
+    # Create model with ANTI-OVERFITTING hyperparameters
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=3e-4,     # Lower learning rate for more stable learning with exponential rewards
-        n_steps=4096,           # Larger buffer for better experience diversity
-        batch_size=256,         # Larger batches for more stable gradient estimates
-        n_epochs=4,             # Fewer epochs to prevent overfitting on exponential rewards
-        gamma=0.99,             # Standard discount factor (reduced from 0.995)
+        learning_rate=1e-4,     # Lower learning rate for stability
+        n_steps=2048,           # Smaller buffer for more diverse experiences
+        batch_size=64,          # Smaller batches to prevent overfitting
+        n_epochs=3,             # Fewer epochs to prevent overfitting
+        gamma=0.99,             # Standard discount factor
         gae_lambda=0.95,        # Keep GAE lambda
-        clip_range=0.2,         # Smaller clip range for more conservative updates
-        clip_range_vf=None,     # No value function clipping for exponential rewards
-        ent_coef=0.005,         # Lower entropy for more focused exploration
-        vf_coef=0.25,           # Lower value function coefficient 
-        max_grad_norm=0.5,      # Keep gradient clipping
+        clip_range=0.15,        # Moderate clipping
+        clip_range_vf=0.15,     # Also clip value function
+        ent_coef=0.02,          # Higher entropy to prevent overfitting
+        vf_coef=0.5,            # Standard value function coefficient
+        max_grad_norm=0.5,      # Standard gradient clipping
         tensorboard_log="./tensorboard_logs/",
         policy_kwargs=dict(
-            net_arch=[128, 128, 64],  # Smaller network to prevent overfitting to exponential rewards
-            activation_fn=torch.nn.ReLU  # ReLU works better with exponential rewards than Tanh
+            net_arch=[64, 64],  # Smaller network to prevent overfitting
+            activation_fn=torch.nn.Tanh,  # More stable than ReLU
         )
     )
     
@@ -139,32 +139,31 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     # Always add evaluation callback
     if use_early_stopping:
-        # Create early stopping callback first - adjusted threshold for exponential reward function
-        # New exponential reward function: max ~6-8 per step, so for 2000 steps = ~12000-16000 max
-        # Set threshold at ~60% of theoretical maximum for good performance
-        reward_threshold = 5000.0 if control_freq >= 50 else 4000.0
+        # Adjusted thresholds for simplified linear reward function
+        # With max ~1800 per episode, aim for 70-80% of theoretical max
+        reward_threshold = 1200.0 if control_freq >= 50 else 1000.0  # Much higher threshold for linear rewards
         callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-        print(f"Early stopping threshold: {reward_threshold} (adjusted for exponential reward function at {control_freq} Hz)")
+        print(f"Early stopping threshold: {reward_threshold} (adjusted for simplified linear reward)")
         
-        # Create eval callback with early stopping
+        # Create eval callback with early stopping - FIXED: use stochastic evaluation
         eval_callback = EvalCallback(
             eval_env,
-            eval_freq=5000,
+            eval_freq=2500,  # More frequent evaluation
             best_model_save_path="./models/",
             verbose=1,
-            deterministic=True,
+            deterministic=False,  # CHANGED: Allow some randomness in evaluation
             render=False,
             callback_on_new_best=callback_on_best
         )
         print(f"Early stopping enabled - training will stop when reward reaches {reward_threshold}")
     else:
-        # Create eval callback without early stopping
+        # Create eval callback without early stopping - FIXED: use stochastic evaluation
         eval_callback = EvalCallback(
             eval_env,
-            eval_freq=5000,
+            eval_freq=2500,  # More frequent evaluation
             best_model_save_path="./models/",
             verbose=1,
-            deterministic=True,
+            deterministic=False,  # CHANGED: Allow some randomness in evaluation
             render=False
         )
         print("Early stopping disabled - training will run for full duration")
@@ -181,9 +180,9 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     print("💾 Checkpoints saved every 10k steps to ./checkpoints/")
     print("🏆 Best models saved to ./models/")
     
-    # Train the model with adjusted timesteps for exponential rewards
+    # Train the model - increased timesteps since agent was just starting to improve at 150k
     model.learn(
-        total_timesteps=500000,  # Reduced timesteps - exponential rewards converge faster
+        total_timesteps=500000,  # Back to 500k - agent needs more time to fully converge
         callback=callbacks,
         progress_bar=True
     )
