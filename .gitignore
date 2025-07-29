@@ -1,3 +1,5 @@
 venv/
 __pycache__/
 *.pyc 
+tensorboard_logs/
+*.json
