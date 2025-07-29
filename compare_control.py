@@ -35,6 +35,18 @@ class BallBalanceComparison:
     def setup_simulation(self):
         """Initialize PyBullet simulation"""
         p.connect(p.GUI)
+        
+        # Set up a better camera view
+        p.resetDebugVisualizerCamera(
+            cameraDistance=0.8,        # Distance from target
+            cameraYaw=45,              # Horizontal angle (degrees)
+            cameraPitch=-30,           # Vertical angle (degrees, negative = looking down)
+            cameraTargetPosition=[0, 0, 0.06]  # Look at the table center
+        )
+        # Optional: configure visualizer for cleaner view
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)  # Keep GUI
+        p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)  # Better rendering
+        
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         

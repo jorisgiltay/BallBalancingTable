@@ -21,7 +21,7 @@ class BallBalanceEnv(gym.Env):
     - Table roll angle change
     """
     
-    def __init__(self, render_mode="human", max_steps=1000):
+    def __init__(self, render_mode="human", max_steps=2000):
         super().__init__()
         
         self.render_mode = render_mode
@@ -72,6 +72,16 @@ class BallBalanceEnv(gym.Env):
         # Initialize PyBullet
         if self.render_mode == "human":
             self.physics_client = p.connect(p.GUI)
+            # Set up a better camera view
+            p.resetDebugVisualizerCamera(
+                cameraDistance=0.8,        # Distance from target
+                cameraYaw=45,              # Horizontal angle (degrees)
+                cameraPitch=-30,           # Vertical angle (degrees, negative = looking down)
+                cameraTargetPosition=[0, 0, 0.06]  # Look at the table center
+            )
+            # Optional: disable some GUI elements for cleaner view
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)  # Keep GUI
+            p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)  # Better rendering
         else:
             self.physics_client = p.connect(p.DIRECT)
             

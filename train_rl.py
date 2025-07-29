@@ -54,23 +54,34 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False):
     callbacks.append(checkpoint_callback)
     
     # Always add evaluation callback
-    eval_callback = EvalCallback(
-        eval_env,
-        eval_freq=5000,
-        best_model_save_path="./models/",
-        verbose=1,
-        deterministic=True,
-        render=False
-    )
-    callbacks.append(eval_callback)
-    
-    # Optionally add early stopping
     if use_early_stopping:
-        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=3.0, verbose=1)  # Lowered threshold
-        eval_callback.callback_on_new_best = callback_on_best
-        print("Early stopping enabled - training will stop when reward reaches 3.0")
+        # Create early stopping callback first
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=1200.0, verbose=1)
+        
+        # Create eval callback with early stopping
+        eval_callback = EvalCallback(
+            eval_env,
+            eval_freq=5000,
+            best_model_save_path="./models/",
+            verbose=1,
+            deterministic=True,
+            render=False,
+            callback_on_new_best=callback_on_best
+        )
+        print("Early stopping enabled - training will stop when reward reaches 1200.0")
     else:
+        # Create eval callback without early stopping
+        eval_callback = EvalCallback(
+            eval_env,
+            eval_freq=5000,
+            best_model_save_path="./models/",
+            verbose=1,
+            deterministic=True,
+            render=False
+        )
         print("Early stopping disabled - training will run for full duration")
+    
+    callbacks.append(eval_callback)
     
     # Create models directory
     os.makedirs("models", exist_ok=True)
