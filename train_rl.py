@@ -104,19 +104,19 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=3e-4,    # Slightly higher LR
-        n_steps=1024,          # More frequent updates
-        batch_size=64,
-        n_epochs=10,           # More epochs per update to better fit batch
-        gamma=0.99,
+        learning_rate=1e-3,     # Higher learning rate for faster learning
+        n_steps=2048,           # Larger buffer for more diverse experiences
+        batch_size=128,         # Larger batches for stable updates
+        n_epochs=8,             # Fewer epochs to prevent overfitting
+        gamma=0.995,            # Slightly higher discount for long-term rewards
         gae_lambda=0.95,
-        clip_range=0.2,        # Default clipping
-        ent_coef=0.005,        # Lower entropy coefficient
+        clip_range=0.3,         # Larger clip range for more aggressive updates
+        ent_coef=0.01,          # Higher entropy for more exploration
         vf_coef=0.5,
         max_grad_norm=0.5,
         tensorboard_log="./tensorboard_logs/",
         policy_kwargs=dict(
-            net_arch=[128, 128],  # Same size net but simple list is fine
+            net_arch=[256, 256],  # Larger network for better function approximation
             activation_fn=torch.nn.Tanh
         )
     )
@@ -138,11 +138,12 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     # Always add evaluation callback
     if use_early_stopping:
-        # Create early stopping callback first - adjusted threshold for new timing
-        # With 50 Hz control instead of 240 Hz, episodes are slower so adjust threshold
-        reward_threshold = 2500.0 if control_freq >= 50 else 1500.0
+        # Create early stopping callback first - adjusted threshold for new reward function
+        # New simplified reward function: max ~3.5 per step, so for 2000 steps = ~7000 max
+        # Set threshold at ~80% of good performance
+        reward_threshold = 5000.0 if control_freq >= 50 else 3000.0
         callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-        print(f"Early stopping threshold: {reward_threshold} (adjusted for {control_freq} Hz control)")
+        print(f"Early stopping threshold: {reward_threshold} (adjusted for simplified reward function at {control_freq} Hz)")
         
         # Create eval callback with early stopping
         eval_callback = EvalCallback(
@@ -154,7 +155,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
             render=False,
             callback_on_new_best=callback_on_best
         )
-        print("Early stopping enabled - training will stop when reward reaches 2500.0")
+        print(f"Early stopping enabled - training will stop when reward reaches {reward_threshold}")
     else:
         # Create eval callback without early stopping
         eval_callback = EvalCallback(
