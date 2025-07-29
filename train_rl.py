@@ -2,18 +2,96 @@ import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, CheckpointCallback
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, CheckpointCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
 import os
 import torch
+import threading
+import time
 from ball_balance_env import BallBalanceEnv
 
 
-def train_rl_agent(use_early_stopping=True, use_curriculum=False):
+class RenderToggleCallback(BaseCallback):
+    """Callback that allows toggling rendering during training"""
+    
+    def __init__(self, env, verbose=0):
+        super().__init__(verbose)
+        self.env = env
+        self.render_enabled = False
+        self.listener_thread = None
+        self.running = True
+        self.should_stop = False
+        
+    def _on_training_start(self) -> None:
+        print("\n🎮 Rendering Controls:")
+        print("  Press 'r' + Enter to toggle rendering ON/OFF")
+        print("  Press 'q' + Enter to quit training")
+        print("  Current rendering: OFF (for speed)")
+        
+        # Start keyboard listener in separate thread
+        self.listener_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
+        self.listener_thread.start()
+        
+    def _keyboard_listener(self):
+        """Listen for keyboard input in separate thread"""
+        while self.running:
+            try:
+                key = input().strip().lower()
+                if key == 'r':
+                    self._toggle_rendering()
+                elif key == 'q':
+                    print("🛑 Stopping training...")
+                    # Set a flag that will be checked in _on_step
+                    self.should_stop = True
+                    break
+            except (EOFError, KeyboardInterrupt):
+                break
+                
+    def _toggle_rendering(self):
+        """Toggle rendering mode"""
+        try:
+            self.render_enabled = not self.render_enabled
+            
+            # Access the underlying BallBalanceEnv through the Monitor wrapper
+            underlying_env = self.env
+            if hasattr(self.env, 'env'):  # If it's wrapped in Monitor
+                underlying_env = self.env.env
+            
+            if self.render_enabled:
+                # Switch to human rendering
+                underlying_env.render_mode = "human"
+                print("🎬 Rendering ENABLED - You can now see the training!")
+            else:
+                # Switch to rgb_array (no visual)
+                underlying_env.render_mode = "rgb_array"
+                print("⚡ Rendering DISABLED - Training at full speed")
+                
+        except Exception as e:
+            print(f"Error toggling rendering: {e}")
+            print("Rendering toggle may not be supported with this environment wrapper")
+    
+    def _on_training_end(self) -> None:
+        self.running = False
+    
+    def _on_step(self) -> bool:
+        """Called after each step. Must return True to continue training."""
+        # Return False to stop training if user pressed 'q'
+        if self.should_stop:
+            print("🏁 Training stopped by user request")
+            return False
+        return True
+
+
+def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False):
     """Train a reinforcement learning agent for ball balancing"""
     
-    # Create environment
-    env = BallBalanceEnv(render_mode="human")
+    # Create environment with optional rendering
+    if render_training:
+        env = BallBalanceEnv(render_mode="human")
+        print("🎬 Training with visual rendering enabled")
+    else:
+        env = BallBalanceEnv(render_mode="rgb_array")  # No visual rendering for speed
+        print("⚡ Training without visual rendering for maximum speed")
     env = Monitor(env)
     
     # Create evaluation environment (without rendering for speed)
@@ -44,6 +122,10 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False):
     
     # Create callbacks
     callbacks = []
+    
+    # Add render toggle callback for interactive control
+    render_toggle_callback = RenderToggleCallback(env, verbose=1)
+    callbacks.append(render_toggle_callback)
     
     # Checkpoint callback - saves model every 10k steps
     checkpoint_callback = CheckpointCallback(
@@ -151,15 +233,29 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="models/ball_balance_ppo_final", help="Path to model for testing")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable early stopping during training")
     parser.add_argument("--resume-from", type=str, help="Resume training from specific checkpoint")
+    parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")
+    parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")
     
     args = parser.parse_args()
+    
+    # Determine render mode
+    if args.render and args.no_render:
+        print("Error: Cannot use both --render and --no-render")
+        exit(1)
+    elif args.render:
+        render_training = True
+    elif args.no_render:
+        render_training = False
+    else:
+        # Default: no rendering for speed
+        render_training = False
     
     if args.mode == "train":
         if args.resume_from:
             from recovery_tool import resume_training_from_checkpoint
             resume_training_from_checkpoint(args.resume_from)
         else:
-            train_rl_agent(use_early_stopping=not args.no_early_stop)
+            train_rl_agent(use_early_stopping=not args.no_early_stop, render_training=render_training)
     elif args.mode == "recover":
         from recovery_tool import rollback_to_checkpoint
         rollback_to_checkpoint()
