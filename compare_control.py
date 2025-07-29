@@ -30,6 +30,7 @@ class BallBalanceComparison:
         self.table_pitch = 0.0
         self.table_roll = 0.0
         self.step_count = 0
+        self.randomize_ball = True  # Start with randomized positions
         
     def setup_simulation(self):
         """Initialize PyBullet simulation"""
@@ -60,10 +61,21 @@ class BallBalanceComparison:
         
         self.dt = 1.0 / 240.0
         
-    def reset_ball(self, position=None):
+    def reset_ball(self, position=None, randomize=True):
         """Reset ball to initial position"""
         if position is None:
-            position = [0.12, 0.15, 0.5]  # Default position
+            if randomize:
+                # Random position like in RL training
+                position = [
+                    np.random.uniform(-0.15, 0.15),
+                    np.random.uniform(-0.15, 0.15),
+                    0.5
+                ]
+                print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
+            else:
+                # Fixed position for consistent testing
+                position = [0.12, 0.15, 0.5]  # Default position
+                print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
             
         if hasattr(self, 'ball_id'):
             p.removeBody(self.ball_id)
@@ -164,7 +176,13 @@ class BallBalanceComparison:
     def run_simulation(self):
         """Main simulation loop"""
         print(f"Running simulation with {self.control_method.upper()} control")
-        print("Press 'r' to reset ball, 'p' for PID, 'l' for RL, 'q' to quit")
+        print("Controls:")
+        print("  'r' - Reset ball")
+        print("  'f' - Toggle fixed/random ball position")
+        print("  'p' - Switch to PID control")
+        print("  'l' - Switch to RL control") 
+        print("  'q' - Quit")
+        print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
         while True:
             # Get ball position
@@ -197,22 +215,27 @@ class BallBalanceComparison:
                 if state & p.KEY_WAS_TRIGGERED:
                     if key == ord('r'):
                         print("Resetting ball...")
-                        self.reset_ball()
+                        self.reset_ball(randomize=self.randomize_ball)
+                    elif key == ord('f'):
+                        self.randomize_ball = not self.randomize_ball
+                        mode = "Random" if self.randomize_ball else "Fixed"
+                        print(f"Ball position mode: {mode}")
+                        self.reset_ball(randomize=self.randomize_ball)
                     elif key == ord('p'):
                         print("Switching to PID control")
                         self.control_method = "pid"
-                        self.reset_ball()
+                        self.reset_ball(randomize=self.randomize_ball)
                     elif key == ord('l'):
                         print("Switching to RL control")
                         if self.rl_model is not None:
                             self.control_method = "rl"
-                            self.reset_ball()
+                            self.reset_ball(randomize=self.randomize_ball)
                         else:
                             print("RL model not available. Attempting to load...")
                             self.load_rl_model()
                             if self.rl_model is not None:
                                 self.control_method = "rl"
-                                self.reset_ball()
+                                self.reset_ball(randomize=self.randomize_ball)
                                 print("✅ RL control activated!")
                             else:
                                 print("❌ Still no RL model available")
@@ -224,7 +247,7 @@ class BallBalanceComparison:
             distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
             if distance_from_center > 0.25 or ball_z < 0.05:
                 print(f"Ball fell off after {self.step_count} steps. Resetting...")
-                self.reset_ball()
+                self.reset_ball(randomize=self.randomize_ball)
             
             # Print status every 240 steps (1 second)
             if self.step_count % 240 == 0:

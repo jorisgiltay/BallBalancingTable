@@ -69,12 +69,51 @@ def test_random_policy(episodes=5):
     return total_rewards, episode_lengths
 
 
-def test_pid_baseline():
-    """Test what reward your PID controller would get"""
-    print("\nPID Baseline Test:")
-    print("Run: python compare_control.py --control pid")
-    print("Let it run for a while and observe typical performance")
-    print("This gives you a target for RL to beat!")
+def visualize_starting_positions():
+    """Show the randomization of starting positions"""
+    import matplotlib.pyplot as plt
+    
+    print("Generating 100 random starting positions...")
+    
+    positions_x = []
+    positions_y = []
+    
+    for _ in range(100):
+        x = np.random.uniform(-0.15, 0.15)
+        y = np.random.uniform(-0.15, 0.15)
+        positions_x.append(x)
+        positions_y.append(y)
+    
+    plt.figure(figsize=(8, 8))
+    plt.scatter(positions_x, positions_y, alpha=0.6, s=50)
+    
+    # Draw table boundary
+    table_x = [-0.25, 0.25, 0.25, -0.25, -0.25]
+    table_y = [-0.25, -0.25, 0.25, 0.25, -0.25]
+    plt.plot(table_x, table_y, 'k-', linewidth=2, label='Table Edge')
+    
+    # Draw randomization area
+    rand_x = [-0.15, 0.15, 0.15, -0.15, -0.15]
+    rand_y = [-0.15, -0.15, 0.15, 0.15, -0.15]
+    plt.fill(rand_x, rand_y, alpha=0.2, color='blue', label='Starting Area')
+    
+    plt.scatter([0], [0], color='red', s=100, marker='x', label='Center Target')
+    
+    plt.xlim(-0.3, 0.3)
+    plt.ylim(-0.3, 0.3)
+    plt.xlabel('X Position')
+    plt.ylabel('Y Position')
+    plt.title('Ball Starting Positions in RL Training\n(100 random samples)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.axis('equal')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print(f"Starting positions cover {0.3*0.3:.2f} square units")
+    print(f"Table area is {0.5*0.5:.2f} square units")
+    print(f"Coverage: {(0.3*0.3)/(0.5*0.5)*100:.1f}% of table area")
 
 
 def analyze_action_space():
@@ -130,6 +169,14 @@ def convergence_tips():
     print("   - Entropy drops to near zero too quickly")
 
 
+def test_pid_baseline():
+    """Test what reward your PID controller would get"""
+    print("\nPID Baseline Test:")
+    print("Run: python compare_control.py --control pid")
+    print("Let it run for a while and observe typical performance")
+    print("This gives you a target for RL to beat!")
+
+
 def main():
     print("🤖 Ball Balance RL Debugging Tool")
     print("="*50)
@@ -137,6 +184,10 @@ def main():
     # Run all tests
     test_reward_function()
     analyze_action_space()
+    
+    print("\nDo you want to see starting position visualization? (y/n): ", end="")
+    if input().lower().startswith('y'):
+        visualize_starting_positions()
     
     print("\nDo you want to test random policy? (y/n): ", end="")
     if input().lower().startswith('y'):

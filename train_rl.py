@@ -2,13 +2,14 @@ import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
+from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 import os
+import torch
 from ball_balance_env import BallBalanceEnv
 
 
-def train_rl_agent():
+def train_rl_agent(use_early_stopping=True, use_curriculum=False):
     """Train a reinforcement learning agent for ball balancing"""
     
     # Create environment
@@ -19,49 +20,72 @@ def train_rl_agent():
     eval_env = BallBalanceEnv(render_mode="rgb_array")
     eval_env = Monitor(eval_env)
     
-    # Create model with better hyperparameters for this problem
+    # Create model with stability-focused hyperparameters
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=3e-4,
-        n_steps=1024,  # Reduced from 2048
-        batch_size=32,  # Reduced from 64
-        n_epochs=4,     # Reduced from 10
-        gamma=0.995,    # Increased from 0.99 for longer-term thinking
+        learning_rate=1e-4,  # Reduced for stability
+        n_steps=2048,        # Increased for more experience per update
+        batch_size=64,       # Increased for more stable gradients
+        n_epochs=3,          # Reduced to prevent overfitting
+        gamma=0.99,          # Standard discount factor
         gae_lambda=0.95,
-        clip_range=0.1,  # Reduced from 0.2 for more stable updates
-        ent_coef=0.01,   # Added entropy for exploration
-        vf_coef=0.5,     # Value function coefficient
-        max_grad_norm=0.5,  # Gradient clipping
+        clip_range=0.1,      # Conservative clipping
+        ent_coef=0.02,       # Higher entropy for continued exploration
+        vf_coef=0.5,         
+        max_grad_norm=0.5,   # Gradient clipping
         tensorboard_log="./tensorboard_logs/",
         policy_kwargs=dict(
-            net_arch=dict(pi=[64, 64], vf=[64, 64])  # Smaller network
+            net_arch=dict(pi=[128, 128], vf=[128, 128]),  # Larger network for stability
+            activation_fn=torch.nn.Tanh  # More stable activation
         )
     )
     
     # Create callbacks
-    # Stop training when reward threshold is reached
-    callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=0, verbose=1)
+    callbacks = []
+    
+    # Checkpoint callback - saves model every 10k steps
+    checkpoint_callback = CheckpointCallback(
+        save_freq=10000,
+        save_path="./checkpoints/",
+        name_prefix="ball_balance_checkpoint"
+    )
+    callbacks.append(checkpoint_callback)
+    
+    # Always add evaluation callback
     eval_callback = EvalCallback(
         eval_env,
-        callback_on_new_best=callback_on_best,
         eval_freq=5000,
         best_model_save_path="./models/",
-        verbose=1
+        verbose=1,
+        deterministic=True,
+        render=False
     )
+    callbacks.append(eval_callback)
+    
+    # Optionally add early stopping
+    if use_early_stopping:
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=3.0, verbose=1)  # Lowered threshold
+        eval_callback.callback_on_new_best = callback_on_best
+        print("Early stopping enabled - training will stop when reward reaches 3.0")
+    else:
+        print("Early stopping disabled - training will run for full duration")
     
     # Create models directory
     os.makedirs("models", exist_ok=True)
     os.makedirs("tensorboard_logs", exist_ok=True)
+    os.makedirs("checkpoints", exist_ok=True)
     
     print("Starting training...")
-    print("You can monitor training with: tensorboard --logdir=./tensorboard_logs/")
+    print("📊 Monitor training: tensorboard --logdir=./tensorboard_logs/")
+    print("💾 Checkpoints saved every 10k steps to ./checkpoints/")
+    print("🏆 Best models saved to ./models/")
     
     # Train the model
     model.learn(
         total_timesteps=100000,
-        callback=eval_callback,
+        callback=callbacks,
         progress_bar=True
     )
     
@@ -112,12 +136,21 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Train or test RL agent for ball balancing")
-    parser.add_argument("--mode", choices=["train", "test"], default="train", help="Train or test the agent")
+    parser.add_argument("--mode", choices=["train", "test", "recover"], default="train", help="Train, test, or recover from checkpoint")
     parser.add_argument("--model", default="models/ball_balance_ppo_final", help="Path to model for testing")
+    parser.add_argument("--no-early-stop", action="store_true", help="Disable early stopping during training")
+    parser.add_argument("--resume-from", type=str, help="Resume training from specific checkpoint")
     
     args = parser.parse_args()
     
     if args.mode == "train":
-        train_rl_agent()
+        if args.resume_from:
+            from recovery_tool import resume_training_from_checkpoint
+            resume_training_from_checkpoint(args.resume_from)
+        else:
+            train_rl_agent(use_early_stopping=not args.no_early_stop)
+    elif args.mode == "recover":
+        from recovery_tool import rollback_to_checkpoint
+        rollback_to_checkpoint()
     else:
         test_trained_agent(args.model)

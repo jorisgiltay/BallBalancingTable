@@ -183,28 +183,31 @@ class BallBalanceEnv(gym.Env):
         # Distance from center
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
         
-        # Reward components - IMPROVED VERSION
-        # 1. Positive reward for being close to center (exponential reward)
-        position_reward = np.exp(-distance_from_center * 5.0)  # Reward 1.0 at center, decays to ~0.02 at edge
+        # Reward components - BALANCED VERSION
+        # 1. Distance reward (exponential decay, but scaled down)
+        position_reward = np.exp(-distance_from_center * 3.0) * 0.5  # Max 0.5 at center
         
-        # 2. Small penalty for high velocity (encourage stability)
-        velocity_penalty = -(abs(ball_vx) + abs(ball_vy)) * 0.1
+        # 2. Linear distance penalty (gentle slope)
+        position_penalty = -distance_from_center * 2.0
         
-        # 3. Small penalty for large table angles (encourage efficiency)
+        # 3. Small penalty for high velocity (encourage stability)
+        velocity_penalty = -(abs(ball_vx) + abs(ball_vy)) * 0.2
+        
+        # 4. Small penalty for large table angles (encourage efficiency)
         angle_penalty = -(abs(table_pitch) + abs(table_roll)) * 0.5
         
-        # 4. Big bonus for staying very close to center
+        # 5. Small bonus for being very close to center
         if distance_from_center < 0.05:
-            position_reward += 2.0
+            position_reward += 0.5  # Reduced from 2.0
         
-        # 5. Large penalty if ball falls off table
+        # 6. Large penalty if ball falls off table
         if distance_from_center > self.table_size:
-            return -10.0  # Reduced from -100 to avoid huge spikes
+            return -5.0  # Moderate penalty to avoid huge spikes
         
-        # 6. Small time bonus for surviving each step
+        # 7. Small time bonus for surviving each step
         time_bonus = 0.01
         
-        total_reward = position_reward + velocity_penalty + angle_penalty + time_bonus
+        total_reward = position_reward + position_penalty + velocity_penalty + angle_penalty + time_bonus
         
         return total_reward
     
