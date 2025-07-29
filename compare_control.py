@@ -155,17 +155,14 @@ class BallBalanceComparison:
             self.control_method = "pid"
     
     def get_observation(self):
-        """Get current state observation for RL"""
+        """Get current state observation for RL - POSITION ONLY like PID"""
         # Ball position and orientation
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # Ball velocity
-        ball_vel, _ = p.getBaseVelocity(self.ball_id)
-        ball_vx, ball_vy, _ = ball_vel
-        
+        # POSITION ONLY - no velocity for fair comparison with PID
         observation = np.array([
-            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
+            ball_x, ball_y, self.table_pitch, self.table_roll
         ], dtype=np.float32)
         
         return observation
