@@ -2,6 +2,8 @@
 
 A physics simulation of a ball balancing on a pivoting table, featuring both PID control and Reinforcement Learning approaches.
 
+![alt text](sim.png)
+
 ## Features
 
 - **PID Control**: Traditional control system that works reliably
