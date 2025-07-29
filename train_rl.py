@@ -25,20 +25,20 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False):
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=1e-4,  # Reduced for stability
-        n_steps=2048,        # Increased for more experience per update
-        batch_size=64,       # Increased for more stable gradients
-        n_epochs=3,          # Reduced to prevent overfitting
-        gamma=0.99,          # Standard discount factor
+        learning_rate=3e-4,    # Slightly higher LR
+        n_steps=1024,          # More frequent updates
+        batch_size=64,
+        n_epochs=10,           # More epochs per update to better fit batch
+        gamma=0.99,
         gae_lambda=0.95,
-        clip_range=0.1,      # Conservative clipping
-        ent_coef=0.02,       # Higher entropy for continued exploration
-        vf_coef=0.5,         
-        max_grad_norm=0.5,   # Gradient clipping
+        clip_range=0.2,        # Default clipping
+        ent_coef=0.005,        # Lower entropy coefficient
+        vf_coef=0.5,
+        max_grad_norm=0.5,
         tensorboard_log="./tensorboard_logs/",
         policy_kwargs=dict(
-            net_arch=dict(pi=[128, 128], vf=[128, 128]),  # Larger network for stability
-            activation_fn=torch.nn.Tanh  # More stable activation
+            net_arch=[128, 128],  # Same size net but simple list is fine
+            activation_fn=torch.nn.Tanh
         )
     )
     
@@ -95,7 +95,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False):
     
     # Train the model
     model.learn(
-        total_timesteps=100000,
+        total_timesteps=300000,
         callback=callbacks,
         progress_bar=True
     )
