@@ -2,7 +2,7 @@
 
 A comprehensive physics simulation of a ball balancing on a pivoting table, featuring both PID control and Reinforcement Learning approaches with real-time visual monitoring.
 
-![PyBullet Simulation](sim.png)
+![PyBullet Simulation](media/sim.png)
 
 ## 🎯 Features
 
@@ -18,8 +18,8 @@ A comprehensive physics simulation of a ball balancing on a pivoting table, feat
 - **📈 Live Metrics**: Ball position, velocity, control actions, and table angles
 - **🎯 Visual Feedback**: Color-coded performance indicators and trend monitoring
 
-![PID Control Dashboard](matplotlib_PID.png)
-![RL Control Dashboard](matplotlib_RL.png)
+![PID Control Dashboard](media/matplotlib_PID.png)
+![RL Control Dashboard](media/matplotlib_RL.png)
 
 ### Advanced Environment
 - **🎯 Realistic Physics**: 25cm×25cm table with 2.7g ping pong ball (real-world dimensions)
@@ -76,6 +76,7 @@ During simulation, use these keyboard shortcuts:
 ├── recovery_tool.py      # Model recovery and checkpoint management
 ├── setup.py              # Setup and installation script
 ├── requirements.txt      # Python dependencies
+├── media/                # Screenshots and documentation images
 ├── models/               # Trained RL models
 ├── good_models/          # Backup of best performing models
 ├── checkpoints/          # Training checkpoints every 10k steps
@@ -107,6 +108,20 @@ Monitor training progress:
 ```bash
 tensorboard --logdir=./tensorboard_logs/
 ```
+
+### Training Results
+
+The PPO training shows excellent convergence with the improved reward function:
+
+![TensorBoard Training Results](media/tensorboard_ppo_results.png)
+
+**Key Training Metrics:**
+- **Episode Reward Mean**: Steady improvement from -100 to optimal performance
+- **Evaluation Mean Reward**: Consistent high performance during evaluation phases  
+- **Learning Rate**: Adaptive scheduling for stable convergence
+- **Training Steps**: 330,000+ steps with checkpoints every 10k steps
+
+The training demonstrates the effectiveness of our advanced reward engineering, with the agent learning to avoid bang-bang oscillations and achieving smooth, efficient control.
 
 ## 📊 Performance Monitoring
 
