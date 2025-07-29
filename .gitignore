@@ -4,3 +4,4 @@ __pycache__/
 tensorboard_logs/
 *.json
 models/
+checkpoints/
