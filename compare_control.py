@@ -44,16 +44,22 @@ class BallBalanceComparison:
         """Initialize PyBullet simulation"""
         p.connect(p.GUI)
         
-        # Set up a better camera view
+        # Clean, professional camera setup
         p.resetDebugVisualizerCamera(
-            cameraDistance=0.8,        # Distance from target
-            cameraYaw=45,              # Horizontal angle (degrees)
-            cameraPitch=-30,           # Vertical angle (degrees, negative = looking down)
-            cameraTargetPosition=[0, 0, 0.06]  # Look at the table center
+            cameraDistance=0.6,        # Closer view for better detail
+            cameraYaw=30,              # Slight angle for better perspective
+            cameraPitch=-45,           # Looking down at optimal angle
+            cameraTargetPosition=[0, 0, 0.06]  # Focus on table center
         )
-        # Optional: configure visualizer for cleaner view
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)  # Keep GUI
-        p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)  # Better rendering
+        
+        # Remove GUI clutter for clean appearance
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)                    # Hide control panel
+        p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)          # Better rendering quality
+        p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 0)          # Disable mouse interaction
+        p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS, 0)     # Disable keyboard shortcuts
+        p.configureDebugVisualizer(p.COV_ENABLE_SEGMENTATION_MARK_PREVIEW, 0)  # Clean view
+        p.configureDebugVisualizer(p.COV_ENABLE_DEPTH_BUFFER_PREVIEW, 0)   # Clean view
+        p.configureDebugVisualizer(p.COV_ENABLE_RGB_BUFFER_PREVIEW, 0)     # Clean view
         
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
@@ -61,17 +67,19 @@ class BallBalanceComparison:
         # Create environment objects
         self.plane_id = p.loadURDF("plane.urdf")
         
-        # Base support
+        # Base support - darker gray for better contrast
         self.base_id = p.createMultiBody(
             baseMass=0,
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03]),
-            baseVisualShapeIndex=p.createVisualShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03], rgbaColor=[0.5, 0.5, 0.5, 1]),
+            baseVisualShapeIndex=p.createVisualShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03], rgbaColor=[0.3, 0.3, 0.3, 1]),
             basePosition=[0, 0, 0.02],
         )
         
-        # Table - 25cm x 25cm (halfExtents = total_size / 2)
+        # Table - 25cm x 25cm (halfExtents = total_size / 2) - sleek dark surface
         table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004])
-        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004], rgbaColor=[0.0, 0.0, 0.0, 1])
+        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004], 
+                                         rgbaColor=[0.1, 0.1, 0.1, 1],     # Dark surface
+                                         specularColor=[0.2, 0.2, 0.2])    # Slight metallic look
         self.table_start_pos = [0, 0, 0.06]
         self.table_id = p.createMultiBody(1.0, table_shape, table_visual, self.table_start_pos)
         
@@ -101,7 +109,9 @@ class BallBalanceComparison:
         self.ball_id = p.createMultiBody(
             baseMass=0.1,
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
-            baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, rgbaColor=[1, 0, 0, 1]),
+            baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, 
+                                                   rgbaColor=[0.9, 0.1, 0.1, 1],      # Bright red
+                                                   specularColor=[0.8, 0.8, 0.8]),    # Shiny surface
             basePosition=position
         )
         
