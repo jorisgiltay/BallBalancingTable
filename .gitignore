@@ -5,4 +5,4 @@ tensorboard_logs/
 *.json
 models/
 checkpoints/
-good_models/best_model.zip
+good_models/
