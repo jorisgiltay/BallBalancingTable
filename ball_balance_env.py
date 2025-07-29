@@ -112,8 +112,14 @@ class BallBalanceEnv(gym.Env):
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         
-        # Create environment objects
-        self.plane_id = p.loadURDF("plane.urdf")
+        # Create custom gray ground plane instead of default blue/white checkerboard
+        ground_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01])
+        ground_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01], 
+                                          rgbaColor=[0.4, 0.4, 0.4, 1])  # Clean gray
+        self.plane_id = p.createMultiBody(baseMass=0, 
+                                        baseCollisionShapeIndex=ground_shape,
+                                        baseVisualShapeIndex=ground_visual,
+                                        basePosition=[0, 0, -0.01])
         
         # Base support - darker gray for better contrast
         self.base_id = p.createMultiBody(
@@ -143,10 +149,10 @@ class BallBalanceEnv(gym.Env):
             ]
         
         self.ball_id = p.createMultiBody(
-            baseMass=0.1,
+            baseMass=0.0027,  # 2.7 grams in kg (realistic ping pong ball)
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
             baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, 
-                                                   rgbaColor=[0.9, 0.1, 0.1, 1],      # Bright red
+                                                   rgbaColor=[0.9, 0.9, 0.9, 1],      # Bright white
                                                    specularColor=[0.8, 0.8, 0.8]),    # Shiny surface
             basePosition=ball_start_pos
         )

@@ -1,99 +1,194 @@
 # Ball Balancing Table
 
-A physics simulation of a ball balancing on a pivoting table, featuring both PID control and Reinforcement Learning approaches.
+A comprehensive physics simulation of a ball balancing on a pivoting table, featuring both PID control and Reinforcement Learning approaches with real-time visual monitoring.
 
-![alt text](sim.png)
+![PyBullet Simulation](sim.png)
 
-## Features
+## 🎯 Features
 
-- **PID Control**: Traditional control system that works reliably
-- **Reinforcement Learning**: PPO agent trained to balance the ball
-- **Comparison Mode**: Switch between control methods in real-time
-- **Physics Simulation**: Built with PyBullet for realistic physics
+### Control Systems
+- **🎛️ PID Control**: Traditional control system with tuned parameters for reliable performance
+- **🤖 Reinforcement Learning**: PPO agent trained with advanced reward engineering
+- **⚡ Real-time Comparison**: Switch between control methods during simulation
+- **🔧 Live Tuning**: Adjust control parameters on-the-fly
 
-## Quick Start
+### Visual Dashboard
+- **📊 Matplotlib Dashboard**: Real-time performance monitoring in separate window
+- **🎨 Professional Interface**: Clean, dark-themed dashboard with color-coded status
+- **📈 Live Metrics**: Ball position, velocity, control actions, and table angles
+- **🎯 Visual Feedback**: Color-coded performance indicators and trend monitoring
 
-1. **Setup Environment**:
-   ```bash
-   python setup.py
-   ```
+![PID Control Dashboard](matplotlib_PID.png)
+![RL Control Dashboard](matplotlib_RL.png)
 
-2. **Test PID Control** (your working system):
-   ```bash
-   python compare_control.py --control pid
-   ```
+### Advanced Environment
+- **🎯 Realistic Physics**: 25cm×25cm table with 2.7g ping pong ball (real-world dimensions)
+- **⚙️ Professional Timing**: 240Hz physics, 50Hz control frequency (servo-realistic)
+- **🎨 Clean Visuals**: Gray ground plane, dark metallic table, bright white ball
+- **🔄 Thread-safe Architecture**: Non-blocking visual system with queue-based communication
 
-3. **Train RL Agent**:
-   ```bash
-   python train_rl.py --mode train --freq 50
-   ```
+## 🚀 Quick Start
 
-4. **Test RL Agent**:
-   ```bash
-   python train_rl.py --mode test
-   ```
+### 1. Setup Environment
+```bash
+python setup.py
+```
 
-5. **Compare Both Methods**:
-   ```bash
-   python compare_control.py --control rl --freq 50
-   ```
+### 2. Test PID Control with Visual Dashboard
+```bash
+python compare_control.py --control pid --visuals
+```
 
-## Controls
+### 3. Train RL Agent (with improved reward function)
+```bash
+python train_rl.py --mode train --freq 50
+```
+
+### 4. Test RL Agent with Dashboard
+```bash
+python compare_control.py --control rl --visuals
+```
+
+### 5. Compare Both Methods
+```bash
+python compare_control.py --control pid --freq 50 --visuals
+```
+Then press `l` to switch to RL control in real-time!
+
+## 🎮 Interactive Controls
 
 During simulation, use these keyboard shortcuts:
 - `r` - Reset ball position
+- `f` - Toggle fixed/random ball starting positions
 - `p` - Switch to PID control
-- `l` - Switch to RL control (if trained)
+- `l` - Switch to RL control (if model available)
 - `q` - Quit simulation
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 ├── simulation.py          # Original PID-only simulation
-├── pid_controller.py      # PID controller implementation
-├── ball_balance_env.py    # Gymnasium environment for RL
-├── train_rl.py           # RL training and testing scripts
-├── compare_control.py    # Interactive comparison tool
+├── pid_controller.py      # Tuned PID controller implementation
+├── ball_balance_env.py    # Advanced Gymnasium environment for RL
+├── train_rl.py           # RL training with improved reward engineering
+├── compare_control.py    # Interactive comparison tool with visual dashboard
+├── debug_rl.py           # RL debugging and analysis tools
+├── recovery_tool.py      # Model recovery and checkpoint management
 ├── setup.py              # Setup and installation script
 ├── requirements.txt      # Python dependencies
-├── models/               # Trained RL models (created after training)
-└── tensorboard_logs/     # Training logs (created after training)
+├── models/               # Trained RL models
+├── good_models/          # Backup of best performing models
+├── checkpoints/          # Training checkpoints every 10k steps
+└── tensorboard_logs/     # Detailed training logs
 ```
 
-## Reinforcement Learning Details
+## 🤖 Reinforcement Learning Details
 
-### Environment
-- **Observation Space**: Ball position and table angles (4 dimensions - position only for fair comparison with PID)
-- **Action Space**: Changes to table pitch and roll angles (2 dimensions)
-- **Reward Function**: 
-  - Distance from center (primary)
-  - Velocity penalty (stability)
-  - Angle penalty (efficiency)
-  - Bonus for staying near center
+### Environment Specifications
+- **Observation Space**: 6D - Ball position (x,y), velocity (vx,vy), table angles (pitch,roll)
+- **Action Space**: 2D - Changes to table pitch and roll angles (±0.05 rad)
+- **Physics**: Realistic 25cm table, 2.7g ball, proper friction and inertia
+- **Control Frequency**: 50Hz (servo-realistic timing)
 
-### Training
-- **Algorithm**: PPO (Proximal Policy Optimization)
-- **Training Steps**: 100,000 steps
-- **Evaluation**: Every 5,000 steps
-- **Monitoring**: TensorBoard logs available
+### Advanced Reward Engineering
+- **Position Dominance**: Primary reward for staying near center (3x weight)
+- **Control Energy Function**: PD controller guidance for optimal actions
+- **Bang-bang Penalty**: Sophisticated oscillation detection and prevention
+- **Circular Motion Detection**: Prevents orbital patterns around center
+- **Velocity Context**: Smart velocity penalties based on ball position
+
+### Training Configuration
+- **Algorithm**: PPO (Proximal Policy Optimization) from stable-baselines3
+- **Training Steps**: 330,000+ steps with checkpoints every 10k
+- **Evaluation**: Comprehensive eval every 10k steps
+- **Monitoring**: TensorBoard logs with detailed metrics
 
 Monitor training progress:
 ```bash
 tensorboard --logdir=./tensorboard_logs/
 ```
 
-## Next Steps
+## 📊 Performance Monitoring
 
-1. **Tune Hyperparameters**: Experiment with different RL parameters
-2. **Add Camera Input**: Integrate computer vision for real-world deployment
-3. **Hardware Integration**: Connect to actual servos and camera
-4. **Advanced Algorithms**: Try other RL algorithms (SAC, TD3, etc.)
-5. **Curriculum Learning**: Start with easier tasks and gradually increase difficulty
+### Visual Dashboard Features
+- **Ball Position Tracker**: Real-time top-down view with table boundary
+- **Control Action Bars**: Live display of pitch/roll commands with magnitude indicators
+- **Table Angle Monitor**: Current table orientation with safety limits
+- **Performance Metrics**: Distance, velocity, action magnitude, and control method
+- **Color-coded Status**: Green (excellent), Yellow (good), Red (poor) performance indicators
 
-## Tips for RL Development
+### Thread-safe Architecture
+- **Non-blocking Updates**: Dashboard updates don't interfere with control timing
+- **Queue-based Communication**: Smooth data flow between simulation and visualization
+- **Optimized Rendering**: Blitting and selective updates for 60+ FPS dashboard performance
 
-- Start with your working PID system as a baseline
-- The RL environment is designed to be compatible with your existing physics setup
-- Training can take time - use the comparison tool to see immediate results
-- Monitor training with TensorBoard to understand learning progress
-- Experiment with reward function design for different behaviors
+## 🎯 Hardware-Ready Design
+
+### Real-world Compatibility
+- **Servo Timing**: 50Hz control frequency matches standard servo update rates
+- **Realistic Dimensions**: 25cm×25cm table matches typical hardware builds
+- **Physical Properties**: 2.7g ping pong ball with realistic friction coefficients
+- **Sensor Simulation**: Position estimation mimics camera/sensor input
+
+### Control Theory Implementation
+- **PD Controller Guidance**: RL reward function includes optimal action calculation
+- **Bang-bang Prevention**: Advanced oscillation detection prevents instability
+- **Energy Optimization**: Minimal control effort for maximum stability
+
+## 🔬 Advanced Features
+
+### Model Management
+- **Automatic Checkpointing**: Models saved every 10,000 training steps
+- **Best Model Tracking**: Automatic backup of highest-performing models
+- **Recovery Tools**: Utilities for checkpoint analysis and model recovery
+
+### Debugging and Analysis
+- **RL Debugging**: Comprehensive tools for analyzing agent behavior
+- **Performance Comparison**: Side-by-side PID vs RL evaluation
+- **Visual Analysis**: Real-time monitoring of control decisions
+
+## 🚀 Next Steps
+
+### Immediate Improvements
+1. **Hardware Integration**: Connect to actual servos and camera system
+2. **Computer Vision**: Replace simulated position with real camera input
+3. **Parameter Optimization**: Use the visual dashboard to fine-tune PID gains
+
+### Advanced Development
+1. **Multi-ball Scenarios**: Handle multiple balls simultaneously
+2. **Disturbance Rejection**: Add external forces and vibrations
+3. **Adaptive Control**: Online learning and parameter adjustment
+4. **Curriculum Learning**: Progressive difficulty increase during training
+
+### Research Directions
+1. **Advanced RL Algorithms**: Experiment with SAC, TD3, or custom architectures
+2. **Transfer Learning**: Train in simulation, deploy on hardware
+3. **Robust Control**: Handle model uncertainties and real-world variations
+
+## 💡 Tips for Development
+
+### For RL Training
+- Monitor the visual dashboard during training to understand agent behavior
+- Use the comparison tool to validate RL performance against PID baseline
+- Watch for bang-bang oscillations - the reward function should prevent them
+- Training plateau around 200k steps is normal - the refined reward function continues improving
+
+### For Hardware Deployment
+- The 50Hz control frequency is optimized for standard servo systems
+- Ball position estimation logic is designed for camera input conversion
+- PID parameters are tuned for realistic response times and stability
+
+### For Experimentation
+- Use `--visuals` flag to understand what each control method is doing
+- Press `f` to toggle between fixed and random starting positions
+- The matplotlib dashboard provides insights into control effort and efficiency
+
+## 📋 System Requirements
+
+- Python 3.8+
+- PyBullet for physics simulation
+- stable-baselines3 for RL algorithms
+- matplotlib for real-time visualization
+- numpy, gymnasium for mathematical operations
+
+**Performance Note**: The visual dashboard is optimized for smooth operation but can be disabled for maximum simulation speed by omitting the `--visuals` flag.

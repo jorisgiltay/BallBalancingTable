@@ -5,6 +5,8 @@ import numpy as np
 from pid_controller import PIDController
 import argparse
 import os
+import threading
+import queue
 
 
 class BallBalanceComparison:
@@ -12,9 +14,10 @@ class BallBalanceComparison:
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
+        self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
         
         # Timing parameters
         self.physics_freq = 240  # Hz - physics simulation frequency
@@ -26,7 +29,17 @@ class BallBalanceComparison:
         self.pitch_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
         self.roll_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
         
+        # Thread-safe visual system with optimized queue
+        if self.enable_visuals:
+            self.visual_queue = queue.Queue(maxsize=5)  # Small buffer to keep data fresh
+            self.visual_thread_running = True
+            self.visual_thread = threading.Thread(target=self._visual_matplotlib_thread, daemon=True)
+        
         self.setup_simulation()
+        
+        # Start visual thread if enabled
+        if self.enable_visuals:
+            self.visual_thread.start()
         
         # RL model (will be loaded if using RL)
         self.rl_model = None
@@ -64,8 +77,14 @@ class BallBalanceComparison:
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         
-        # Create environment objects
-        self.plane_id = p.loadURDF("plane.urdf")
+        # Create custom gray ground plane instead of default blue/white checkerboard
+        ground_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01])
+        ground_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01], 
+                                          rgbaColor=[0.4, 0.4, 0.4, 1])  # Clean gray
+        self.plane_id = p.createMultiBody(baseMass=0, 
+                                        baseCollisionShapeIndex=ground_shape,
+                                        baseVisualShapeIndex=ground_visual,
+                                        basePosition=[0, 0, -0.01])
         
         # Base support - darker gray for better contrast
         self.base_id = p.createMultiBody(
@@ -107,10 +126,10 @@ class BallBalanceComparison:
             p.removeBody(self.ball_id)
             
         self.ball_id = p.createMultiBody(
-            baseMass=0.1,
+            baseMass=0.0027,  # 2.7 grams in kg
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
             baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, 
-                                                   rgbaColor=[0.9, 0.1, 0.1, 1],      # Bright red
+                                                   rgbaColor=[0.9, 0.9, 0.9, 1],      # Bright white
                                                    specularColor=[0.8, 0.8, 0.8]),    # Shiny surface
             basePosition=position
         )
@@ -126,6 +145,148 @@ class BallBalanceComparison:
         # Let ball settle
         for _ in range(100):
             p.stepSimulation()
+    
+    def _visual_matplotlib_thread(self):
+        """Real-time matplotlib dashboard - thread-safe and professional"""
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        from matplotlib.animation import FuncAnimation
+        
+        # Set up the matplotlib figure with simpler layout for performance
+        plt.style.use('dark_background')
+        fig = plt.figure(figsize=(6, 8))
+        fig.suptitle('Ball Balance Dashboard', fontsize=14, fontweight='bold', color='white')
+        
+        # Create simpler layout with fewer subplots
+        gs = fig.add_gridspec(3, 2, height_ratios=[1.5, 1, 1], hspace=0.4, wspace=0.3)
+        
+        # Ball position plot (top-down view of table)
+        ax_table = fig.add_subplot(gs[0, :])
+        ax_table.set_xlim(-0.15, 0.15)
+        ax_table.set_ylim(-0.15, 0.15)
+        ax_table.set_aspect('equal')
+        ax_table.set_title('Ball Position on Table', fontweight='bold')
+        ax_table.set_xlabel('X Position (m)')
+        ax_table.set_ylabel('Y Position (m)')
+        ax_table.grid(True, alpha=0.3)
+        
+        # Draw table boundary
+        table_circle = plt.Circle((0, 0), 0.125, fill=False, color='white', linewidth=2)
+        ax_table.add_patch(table_circle)
+        
+        # Ball position marker
+        ball_marker, = ax_table.plot(0, 0, 'o', color='red', markersize=8)
+        
+        # Control effort and angles combined
+        ax_control = fig.add_subplot(gs[1, :])
+        ax_control.set_title('Control Actions & Table Angles', fontweight='bold')
+        ax_control.set_ylim(-0.06, 0.06)
+        
+        # Combined bars for actions and angles
+        x_pos = np.arange(4)
+        labels = ['Action\nPitch', 'Action\nRoll', 'Table\nPitch', 'Table\nRoll']
+        combined_bars = ax_control.bar(x_pos, [0, 0, 0, 0], 
+                                     color=['cyan', 'orange', 'lightblue', 'lightyellow'])
+        ax_control.set_xticks(x_pos)
+        ax_control.set_xticklabels(labels, fontsize=9)
+        ax_control.set_ylabel('Angle (rad)')
+        ax_control.grid(True, alpha=0.3)
+        
+        # Distance and status combined
+        ax_status = fig.add_subplot(gs[2, :])
+        ax_status.set_title('Performance Status', fontweight='bold')
+        ax_status.axis('off')
+        
+        # Single text display for all metrics (more efficient)
+        status_text = ax_status.text(0.05, 0.7, '', fontsize=11, color='white', 
+                                   verticalalignment='top', fontfamily='monospace')
+        
+        # Animation update function - optimized for smooth performance with blitting
+        def update_dashboard(frame):
+            try:
+                # Get data from queue (non-blocking)
+                data = self.visual_queue.get_nowait()
+                
+                # Update ball position (most frequent update)
+                ball_marker.set_data([data['ball_x']], [data['ball_y']])
+                
+                # Update combined bars (actions and angles) - only if changed significantly
+                heights = [data['action'][0], data['action'][1], data['pitch'], data['roll']]
+                for i, (bar, height) in enumerate(zip(combined_bars, heights)):
+                    bar.set_height(height)
+                    
+                    # Color based on magnitude
+                    if i < 2:  # Action bars
+                        color = 'red' if abs(height) > 0.03 else ('cyan' if i == 0 else 'orange')
+                    else:  # Angle bars  
+                        color = 'red' if abs(height) > 0.05 else ('lightblue' if i == 2 else 'lightyellow')
+                    bar.set_color(color)
+                
+                # Update text only occasionally to reduce rendering load
+                if frame % 3 == 0:  # Update text every 3rd frame (still smooth but less overhead)
+                    velocity_mag = np.sqrt(data['ball_vx']**2 + data['ball_vy']**2)
+                    action_mag = np.linalg.norm(data['action'])
+                    
+                    # Choose status color based on performance
+                    if data['distance'] < 0.05:
+                        text_color = 'green'
+                    elif data['distance'] < 0.1:
+                        text_color = 'yellow'
+                    else:
+                        text_color = 'red'
+                    
+                    status_text.set_text(
+                        f"Control: {data['method'].upper():<3} | Step: {data['step']:<6} | Distance: {data['distance']:.3f}m\n"
+                        f"Ball Pos: ({data['ball_x']:+.3f}, {data['ball_y']:+.3f}) | Velocity: {velocity_mag:.3f} m/s\n"
+                        f"Action: [{data['action'][0]:+.3f}, {data['action'][1]:+.3f}] | Magnitude: {action_mag:.4f}\n"
+                        f"Table: Pitch {data['pitch']:+.3f} | Roll {data['roll']:+.3f}"
+                    )
+                    status_text.set_color(text_color)
+                
+            except queue.Empty:
+                pass  # No new data, keep current display
+            except Exception as e:
+                print(f"Dashboard update error: {e}")
+            
+            # Return all artists for blitting (much faster rendering)
+            return [ball_marker] + list(combined_bars) + [status_text]
+        
+        # Set up animation with optimized update rate for smoothness vs performance
+        ani = FuncAnimation(fig, update_dashboard, interval=100, blit=True, cache_frame_data=False)
+        
+        # Show the dashboard
+        plt.tight_layout()
+        plt.show(block=True)  # Block to keep window open
+        
+        print("Dashboard window closed")
+    
+    def _update_visual_data(self, ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step):
+        """Send data to visual thread via queue (completely thread-safe)"""
+        if self.enable_visuals:
+            try:
+                data = {
+                    'method': self.control_method,
+                    'step': step,
+                    'ball_x': ball_x,
+                    'ball_y': ball_y,
+                    'ball_vx': ball_vx,
+                    'ball_vy': ball_vy,
+                    'distance': distance,
+                    'pitch': self.table_pitch,
+                    'roll': self.table_roll,
+                    'action': control_action if control_action else [0.0, 0.0]
+                }
+                # Try to put data, if queue is full, remove oldest and add new
+                try:
+                    self.visual_queue.put_nowait(data)
+                except queue.Full:
+                    try:
+                        self.visual_queue.get_nowait()  # Remove oldest
+                        self.visual_queue.put_nowait(data)  # Add new
+                    except queue.Empty:
+                        pass  # Queue became empty, just skip
+            except Exception:
+                pass  # Skip any queue errors to avoid affecting simulation
     
     def load_rl_model(self):
         """Load trained RL model"""
@@ -241,11 +402,13 @@ class BallBalanceComparison:
                 ball_z = ball_pos[2]
                 
                 # Control logic - runs at control frequency
+                control_action = None
                 if self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                     # For PID, these are absolute angles
                     self.table_pitch = pitch_angle
                     self.table_roll = roll_angle
+                    control_action = [pitch_angle, roll_angle]
                 else:  # RL
                     pitch_change, roll_change = self.rl_control(observation)
                     # For RL, these are angle changes
@@ -254,10 +417,16 @@ class BallBalanceComparison:
                     # Clip to reasonable limits
                     self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
                     self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
+                    control_action = [pitch_change, roll_change]
                 
                 # Update table orientation
                 quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
                 p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
+                
+                # Update visual data (thread-safe) - every 10 steps for smoother updates
+                if self.step_count % 10 == 0:
+                    distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
+                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count)
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
@@ -267,12 +436,11 @@ class BallBalanceComparison:
                     physics_step_count = 0  # Reset physics step counter
                     continue
                 
-                # Print status every control_freq control steps (1 second)
-                if self.step_count % self.control_freq == 0:
-                    print(f"Control Step: {self.step_count}, Method: {self.control_method.upper()}, "
-                          f"Ball pos: ({ball_x:.3f}, {ball_y:.3f}), "
-                          f"Distance: {distance_from_center:.3f}, "
-                          f"Table: ({self.table_pitch:.3f}, {self.table_roll:.3f})")
+                # Print status occasionally (reduced frequency when visuals are enabled)
+                print_freq = self.control_freq * 10 if self.enable_visuals else self.control_freq
+                if self.step_count % print_freq == 0:
+                    print(f"Step: {self.step_count}, Method: {self.control_method.upper()}, "
+                          f"Distance: {distance_from_center:.3f}m")
                 
                 self.step_count += 1
             
@@ -313,6 +481,8 @@ class BallBalanceComparison:
                                 print("❌ Still no RL model available")
                     elif key == ord('q'):
                         print("Quitting...")
+                        if self.enable_visuals:
+                            self.visual_thread_running = False
                         return
             
             # Always step physics at physics frequency
@@ -327,10 +497,12 @@ def main():
                        help="Control method to start with")
     parser.add_argument("--freq", type=int, default=50,
                        help="Control frequency in Hz (default: 50)")
+    parser.add_argument("--visuals", action="store_true",
+                       help="Enable visual dashboard in console (thread-safe)")
     
     args = parser.parse_args()
     
-    simulator = BallBalanceComparison(control_method=args.control, control_freq=args.freq)
+    simulator = BallBalanceComparison(control_method=args.control, control_freq=args.freq, enable_visuals=args.visuals)
     
     try:
         simulator.run_simulation()
