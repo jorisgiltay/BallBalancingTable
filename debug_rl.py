@@ -23,9 +23,11 @@ def test_reward_function():
     print("-" * 30)
     
     for pos in positions:
-        # Create a fake observation
-        observation = np.array([pos[0], pos[1], 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        reward = env._calculate_reward(observation)
+        # Create a fake observation - 6D format with estimated velocity
+        observation = np.array([pos[0], pos[1], 0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll
+        # Create a fake action (small action for testing)
+        action = np.array([0.01, 0.01])
+        reward = env._calculate_reward(observation, action)
         distance = np.sqrt(pos[0]**2 + pos[1]**2)
         print(f"({pos[0]:4.2f}, {pos[1]:4.2f}) -> {reward:6.3f} (dist: {distance:.3f})")
     

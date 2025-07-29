@@ -12,8 +12,8 @@ class BallBalanceEnv(gym.Env):
     Reinforcement Learning Environment for Ball Balancing Table
     
     Observation Space:
-    - Ball position (x, y)
-    - Ball velocity (vx, vy)
+    - Ball position (x, y) - from camera/sensor
+    - Ball velocity (vx, vy) - estimated from position differences (realistic)
     - Table angles (pitch, roll)
     
     Action Space:
@@ -33,7 +33,7 @@ class BallBalanceEnv(gym.Env):
             low=-0.05, high=0.05, shape=(2,), dtype=np.float32
         )
         
-        # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll]
+        # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll] - ESTIMATED VELOCITY
         self.observation_space = spaces.Box(
             low=np.array([-0.3, -0.3, -2.0, -2.0, -0.1, -0.1]),
             high=np.array([0.3, 0.3, 2.0, 2.0, 0.1, 0.1]),
@@ -48,7 +48,7 @@ class BallBalanceEnv(gym.Env):
         # State tracking
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None
+        self.prev_ball_pos = None  # For velocity estimation
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Track action history for oscillation detection
@@ -66,7 +66,7 @@ class BallBalanceEnv(gym.Env):
         self.current_step = 0
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None
+        self.prev_ball_pos = None  # Reset for velocity estimation
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
@@ -182,57 +182,62 @@ class BallBalanceEnv(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def _get_observation(self):
-        # Ball position and orientation
+        # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
         
-        # Ball velocity
-        ball_vel, _ = p.getBaseVelocity(self.ball_id)
-        ball_vx, ball_vy, _ = ball_vel
+        # Estimate velocity from position differences (realistic approach)
+        ball_vx, ball_vy = 0.0, 0.0
+        if self.prev_ball_pos is not None:
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.dt
         
-        # Store for velocity calculation
-        if self.prev_ball_pos is None:
-            self.prev_ball_pos = [ball_x, ball_y]
+        # Update previous position for next velocity calculation
+        self.prev_ball_pos = [ball_x, ball_y]
         
+        # Return position + estimated velocity + table angles
         observation = np.array([
             ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
         
-        self.prev_ball_pos = [ball_x, ball_y]
-        
         return observation
     
     def _calculate_reward(self, observation, action):
-        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation
+        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation  # Updated for 6D format with estimated velocity
+        
+        # Velocity is now included in observation (estimated from position differences)
+        
+        # Update previous position for next step
+        self.prev_ball_pos = [ball_x, ball_y]
         
         # Distance from center
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
         
-        # Reward components - FOCUSED ON PROPER BALANCING
+        # Reward components - POSITION ONLY like PID, but still reward stability
         # 1. Strong reward for keeping ball close to center
-        position_reward = np.exp(-distance_from_center * 5.0) * 2.0  # Increased reward for good positioning
+        position_reward = np.exp(-distance_from_center * 5.0) * 2.0
         
         # 2. Moderate distance penalty
         position_penalty = -distance_from_center * 1.5
         
-        # 3. Reward for low ball velocity (stability)
+        # 3. Reward for low estimated velocity (stability) - calculated from position
         velocity_magnitude = np.sqrt(ball_vx**2 + ball_vy**2)
-        velocity_reward = np.exp(-velocity_magnitude * 2.0) * 0.5  # Reward for keeping ball still
+        velocity_reward = np.exp(-velocity_magnitude * 2.0) * 0.5
         
-        # 4. Moderate penalty for large table angles (but not too harsh)
+        # 4. Moderate penalty for large table angles
         angle_penalty = -(abs(table_pitch) + abs(table_roll)) * 0.3
         
-        # 5. Light penalty for large actions (servo-friendly but not dominant)
-        action_magnitude_penalty = -(abs(action[0]) + abs(action[1])) * 0.5  # Reduced from 2.0
+        # 5. Light penalty for large actions (servo-friendly)
+        action_magnitude_penalty = -(abs(action[0]) + abs(action[1])) * 0.5
         
-        # 6. Light penalty for rapid angle changes (smooth but allow necessary corrections)
+        # 6. Light penalty for rapid angle changes (smooth movement)
         angle_change_pitch = abs(table_pitch - self.prev_table_pitch)
         angle_change_roll = abs(table_roll - self.prev_table_roll)
-        smooth_movement_penalty = -(angle_change_pitch + angle_change_roll) * 1.0  # Reduced from 5.0
+        smooth_movement_penalty = -(angle_change_pitch + angle_change_roll) * 1.0
         
         # 7. Special reward for being very close to center AND stable
         if distance_from_center < 0.05 and velocity_magnitude < 0.1:
-            stability_bonus = 1.0  # Big bonus for proper balancing
+            stability_bonus = 1.0
         else:
             stability_bonus = 0.0
         
@@ -283,7 +288,7 @@ class BallBalanceEnv(gym.Env):
         return total_reward
     
     def _is_terminated(self, observation):
-        ball_x, ball_y, _, _, _, _ = observation
+        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation  # Updated for 6D format
         
         # Check if ball fell off the table
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)

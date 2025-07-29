@@ -63,7 +63,7 @@ During simulation, use these keyboard shortcuts:
 ## Reinforcement Learning Details
 
 ### Environment
-- **Observation Space**: Ball position, velocity, and table angles (6 dimensions)
+- **Observation Space**: Ball position and table angles (4 dimensions - position only for fair comparison with PID)
 - **Action Space**: Changes to table pitch and roll angles (2 dimensions)
 - **Reward Function**: 
   - Distance from center (primary)
