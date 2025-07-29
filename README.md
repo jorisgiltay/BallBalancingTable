@@ -25,7 +25,7 @@ A physics simulation of a ball balancing on a pivoting table, featuring both PID
 
 3. **Train RL Agent**:
    ```bash
-   python train_rl.py --mode train
+   python train_rl.py --mode train --freq 50
    ```
 
 4. **Test RL Agent**:
@@ -35,7 +35,7 @@ A physics simulation of a ball balancing on a pivoting table, featuring both PID
 
 5. **Compare Both Methods**:
    ```bash
-   python compare_control.py --control rl
+   python compare_control.py --control rl --freq 50
    ```
 
 ## Controls

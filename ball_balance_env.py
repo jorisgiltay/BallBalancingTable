@@ -30,7 +30,7 @@ class BallBalanceEnv(gym.Env):
         
         # Action space: pitch and roll angle changes (in radians) - smaller for smoother control
         self.action_space = spaces.Box(
-            low=-0.02, high=0.02, shape=(2,), dtype=np.float32  # Reduced from ±0.05 to ±0.02
+            low=-0.05, high=0.05, shape=(2,), dtype=np.float32  
         )
         
         # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll] - ESTIMATED VELOCITY
@@ -59,6 +59,7 @@ class BallBalanceEnv(gym.Env):
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Track action history for oscillation detection
+        self.prev_action = None  # Track previous action for jerk penalty
         
         # Initialize PyBullet
         self.physics_client = None
@@ -78,6 +79,7 @@ class BallBalanceEnv(gym.Env):
         self.prev_table_pitch = 0.0
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
+        self.prev_action = None  # Reset previous action for jerk penalty
         
         # Disconnect existing physics client if it exists
         if self.physics_client is not None:
@@ -218,27 +220,58 @@ class BallBalanceEnv(gym.Env):
         # Distance from center
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
         
-        # SIMPLE REWARD FUNCTION - focus on core objectives
+        # TUNED REWARD FUNCTION - focus on core objectives with better scaling
         
-        # 1. Primary goal: Keep ball at center
-        position_reward = 1.0 - distance_from_center / self.table_size  # Linear: 1.0 at center, 0.0 at edge
+        # 1. Primary goal: Keep ball at center (exponential for better gradient)
+        position_reward = np.exp(-distance_from_center * 8.0)  # Strong reward near center, decays exponentially
         
-        # 2. Secondary goal: Minimize velocity (want ball stationary)
+        # 2. Secondary goal: Minimize velocity (quadratic penalty for smoother control)
         velocity_magnitude = np.sqrt(ball_vx**2 + ball_vy**2)
-        velocity_reward = 1.0 - min(velocity_magnitude / 0.5, 1.0)  # 1.0 for zero velocity, 0.0 for velocity >= 0.5
+        velocity_reward = np.exp(-velocity_magnitude * 3.0)  # Exponential decay for velocity
         
-        # 3. Tertiary goal: Minimize plate movement
+        # 3. Tertiary goal: Minimize plate movement (adjusted scale)
         action_magnitude = np.sqrt(action[0]**2 + action[1]**2)
-        action_reward = 1.0 - min(action_magnitude / 0.02, 1.0)  # 1.0 for no action, 0.0 for max action
+        action_reward = 1.0 - min(action_magnitude / 0.05, 1.0)  # Use full action range for scaling
         
-        # 4. Severe penalty for ball falling off
+        # 4. Severe penalty for ball falling off (increased penalty)
         if distance_from_center > self.table_size:
-            return -10.0
+            return -20.0  # Increased from -10 for stronger avoidance
         
-        # Combine rewards with weights
-        total_reward = (position_reward * 2.0 +  # Position is most important
-                       velocity_reward * 1.0 +   # Velocity is moderately important
-                       action_reward * 0.5)      # Action efficiency is least important
+        # 5. Penalty for sudden servo movements (jerky control) - tuned thresholds
+        jerk_penalty = 0.0
+        if self.prev_action is not None:
+            delta_pitch = abs(action[0] - self.prev_action[0])
+            delta_roll = abs(action[1] - self.prev_action[1])
+            jerk_magnitude = np.sqrt(delta_pitch**2 + delta_roll**2)
+            jerk_penalty = -min(jerk_magnitude / 0.02, 1.0) * 0.8  # Reduced max penalty and increased threshold
+
+        # 6. Penalize bang-bang control (tuned thresholds)
+        bang_bang_penalty = 0.0
+        action_limit = 0.05  # Your action space limit
+        threshold = 0.04     # 80% of the limit (reduced from 90%)
+        
+        # Progressive penalty instead of hard cutoff
+        for action_component in [action[0], action[1]]:
+            if abs(action_component) > threshold:
+                excess = (abs(action_component) - threshold) / (action_limit - threshold)
+                bang_bang_penalty -= excess**2 * 1.5  # Quadratic penalty, max -1.5 per component
+        
+        # Update previous action
+        self.prev_action = action.copy()  # Use copy to avoid reference issues
+        
+        # Combine rewards with tuned weights
+        total_reward = (position_reward * 3.0 +    # Position is most important (increased weight)
+                       velocity_reward * 1.5 +    # Velocity is very important for stability
+                       action_reward * 0.3 +      # Action efficiency is less important
+                       jerk_penalty +             # Jerk penalty (reduced impact)
+                       bang_bang_penalty)        # Bang-bang penalty (reduced impact)
+        
+        # 7. Stability bonus: Extra reward when ball is stable and actions are minimal (tuned)
+        if distance_from_center < 0.08 and velocity_magnitude < 0.15:  # Relaxed thresholds
+            stability_multiplier = 1.0 - (distance_from_center / 0.08)  # Scale bonus by how close to center
+            velocity_multiplier = 1.0 - (velocity_magnitude / 0.15)     # Scale bonus by how slow the ball is
+            stability_reward = 1.5 * stability_multiplier * velocity_multiplier * (1.0 - action_magnitude / 0.05)
+            total_reward += stability_reward
         
         return total_reward
     
