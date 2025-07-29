@@ -118,8 +118,8 @@ class BallBalanceComparison:
                 ]
                 print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
             else:
-                # Fixed position for consistent testing - adjusted for 25cm table
-                position = [0.08, 0.10, 0.5]  # Smaller default position
+                # Fixed position for consistent testing - well within 25cm table
+                position = [0.06, 0.08, 0.5]  # Distance = 0.10m (safely within 0.125m table)
                 print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
             
         if hasattr(self, 'ball_id'):
