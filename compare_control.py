@@ -199,8 +199,8 @@ class BallBalanceComparison:
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
         # Only print RL actions occasionally to avoid spam
-        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
-            print(f"RL action: {action}")
+        # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+        print(f"RL action: {action}")
         return action[0], action[1]  # pitch_change, roll_change
     
     def run_simulation(self):
