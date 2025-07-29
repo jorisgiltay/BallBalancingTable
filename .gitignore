@@ -3,3 +3,4 @@ __pycache__/
 *.pyc 
 tensorboard_logs/
 *.json
+models/
