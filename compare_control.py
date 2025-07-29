@@ -105,7 +105,6 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                "models/ball_balance_ppo_final",
                 "models/best_model"
             ]
             
