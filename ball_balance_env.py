@@ -49,6 +49,9 @@ class BallBalanceEnv(gym.Env):
         self.table_pitch = 0.0
         self.table_roll = 0.0
         self.prev_ball_pos = None
+        self.prev_table_pitch = 0.0
+        self.prev_table_roll = 0.0
+        self.prev_actions = []  # Track action history for oscillation detection
         
         # Initialize PyBullet
         self.physics_client = None
@@ -64,6 +67,9 @@ class BallBalanceEnv(gym.Env):
         self.table_pitch = 0.0
         self.table_roll = 0.0
         self.prev_ball_pos = None
+        self.prev_table_pitch = 0.0
+        self.prev_table_roll = 0.0
+        self.prev_actions = []  # Reset action history
         
         # Disconnect existing physics client if it exists
         if self.physics_client is not None:
@@ -135,6 +141,15 @@ class BallBalanceEnv(gym.Env):
     def step(self, action):
         self.current_step += 1
         
+        # Store previous angles for smooth movement penalty
+        self.prev_table_pitch = self.table_pitch
+        self.prev_table_roll = self.table_roll
+        
+        # Track action history for oscillation detection (keep last 4 actions)
+        self.prev_actions.append(action.copy())
+        if len(self.prev_actions) > 4:
+            self.prev_actions.pop(0)
+        
         # Apply action (change in table angles)
         self.table_pitch += action[0]
         self.table_roll += action[1]
@@ -156,7 +171,7 @@ class BallBalanceEnv(gym.Env):
         observation = self._get_observation()
         
         # Calculate reward
-        reward = self._calculate_reward(observation)
+        reward = self._calculate_reward(observation, action)
         
         # Check termination conditions
         terminated = self._is_terminated(observation)
@@ -187,37 +202,83 @@ class BallBalanceEnv(gym.Env):
         
         return observation
     
-    def _calculate_reward(self, observation):
+    def _calculate_reward(self, observation, action):
         ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation
         
         # Distance from center
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
         
-        # Reward components - BALANCED VERSION
-        # 1. Distance reward (exponential decay, but scaled down)
-        position_reward = np.exp(-distance_from_center * 3.0) * 0.5  # Max 0.5 at center
+        # Reward components - FOCUSED ON PROPER BALANCING
+        # 1. Strong reward for keeping ball close to center
+        position_reward = np.exp(-distance_from_center * 5.0) * 2.0  # Increased reward for good positioning
         
-        # 2. Linear distance penalty (gentle slope)
-        position_penalty = -distance_from_center * 2.0
+        # 2. Moderate distance penalty
+        position_penalty = -distance_from_center * 1.5
         
-        # 3. Small penalty for high velocity (encourage stability)
-        velocity_penalty = -(abs(ball_vx) + abs(ball_vy)) * 0.2
+        # 3. Reward for low ball velocity (stability)
+        velocity_magnitude = np.sqrt(ball_vx**2 + ball_vy**2)
+        velocity_reward = np.exp(-velocity_magnitude * 2.0) * 0.5  # Reward for keeping ball still
         
-        # 4. Small penalty for large table angles (encourage efficiency)
-        angle_penalty = -(abs(table_pitch) + abs(table_roll)) * 0.5
+        # 4. Moderate penalty for large table angles (but not too harsh)
+        angle_penalty = -(abs(table_pitch) + abs(table_roll)) * 0.3
         
-        # 5. Small bonus for being very close to center
-        if distance_from_center < 0.05:
-            position_reward += 0.5  # Reduced from 2.0
+        # 5. Light penalty for large actions (servo-friendly but not dominant)
+        action_magnitude_penalty = -(abs(action[0]) + abs(action[1])) * 0.5  # Reduced from 2.0
         
-        # 6. Large penalty if ball falls off table
+        # 6. Light penalty for rapid angle changes (smooth but allow necessary corrections)
+        angle_change_pitch = abs(table_pitch - self.prev_table_pitch)
+        angle_change_roll = abs(table_roll - self.prev_table_roll)
+        smooth_movement_penalty = -(angle_change_pitch + angle_change_roll) * 1.0  # Reduced from 5.0
+        
+        # 7. Special reward for being very close to center AND stable
+        if distance_from_center < 0.05 and velocity_magnitude < 0.1:
+            stability_bonus = 1.0  # Big bonus for proper balancing
+        else:
+            stability_bonus = 0.0
+        
+        # 8. STRONG penalty for oscillating behavior (detect sign flipping)
+        oscillation_penalty = 0.0
+        if len(self.prev_actions) >= 3:  # Need at least 3 actions to detect oscillation
+            # Check for sign flipping in recent actions
+            recent_actions = np.array(self.prev_actions[-3:])  # Last 3 actions
+            
+            # Detect if actions are alternating signs (oscillating)
+            pitch_signs = np.sign(recent_actions[:, 0])
+            roll_signs = np.sign(recent_actions[:, 1])
+            
+            # Check for alternating pattern: +, -, + or -, +, -
+            pitch_oscillating = (pitch_signs[0] != pitch_signs[1] and pitch_signs[1] != pitch_signs[2])
+            roll_oscillating = (roll_signs[0] != roll_signs[1] and roll_signs[1] != roll_signs[2])
+            
+            # Check for maximum magnitude oscillations (the worst kind)
+            max_actions = np.abs(recent_actions) > 0.04  # Near maximum action
+            
+            if (pitch_oscillating or roll_oscillating) and np.any(max_actions):
+                oscillation_penalty = -2.0  # Heavy penalty for oscillating at max
+                
+        # 9. Reward for action consistency (small, similar actions over time)
+        action_consistency_bonus = 0.0
+        if len(self.prev_actions) >= 2:
+            # Reward for making similar actions (consistent control)
+            action_similarity = 1.0 - np.mean(np.abs(action - self.prev_actions[-1]))
+            action_consistency_bonus = action_similarity * 0.3
+            
+        # 10. Special penalty for using maximum actions repeatedly
+        max_action_penalty = 0.0
+        if np.any(np.abs(action) > 0.045):  # Close to maximum action space
+            max_action_penalty = -0.5
+        
+        # 11. Large penalty if ball falls off table
         if distance_from_center > self.table_size:
-            return -5.0  # Moderate penalty to avoid huge spikes
+            return -10.0
         
-        # 7. Small time bonus for surviving each step
-        time_bonus = 0.01
+        # 12. Time bonus for surviving each step
+        time_bonus = 0.02
         
-        total_reward = position_reward + position_penalty + velocity_penalty + angle_penalty + time_bonus
+        total_reward = (position_reward + position_penalty + velocity_reward + 
+                       angle_penalty + action_magnitude_penalty + smooth_movement_penalty + 
+                       stability_bonus + oscillation_penalty + action_consistency_bonus + 
+                       max_action_penalty + time_bonus)
         
         return total_reward
     

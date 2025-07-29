@@ -182,6 +182,7 @@ class BallBalanceComparison:
             return 0.0, 0.0
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
+        print(f"RL action: {action}")
         return action[0], action[1]  # pitch_change, roll_change
     
     def run_simulation(self):

@@ -138,7 +138,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     # Always add evaluation callback
     if use_early_stopping:
         # Create early stopping callback first
-        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=1200.0, verbose=1)
+        callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=2500.0, verbose=1)
         
         # Create eval callback with early stopping
         eval_callback = EvalCallback(
@@ -150,7 +150,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
             render=False,
             callback_on_new_best=callback_on_best
         )
-        print("Early stopping enabled - training will stop when reward reaches 1200.0")
+        print("Early stopping enabled - training will stop when reward reaches 2500.0")
     else:
         # Create eval callback without early stopping
         eval_callback = EvalCallback(
@@ -177,7 +177,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     # Train the model
     model.learn(
-        total_timesteps=300000,
+        total_timesteps=750000,  # Increased further - agent needs to unlearn bad behavior
         callback=callbacks,
         progress_bar=True
     )
