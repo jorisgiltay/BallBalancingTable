@@ -36,16 +36,13 @@ class ColorCalibrationTest:
         self.table_size = 0.25       # 25cm x 25cm tilting table
         self.marker_size = 0.04      # 4cm x 4cm colored markers
         
-        # Color ranges for marker detection (HSV)
-        self.color_ranges = {
-            0: {"name": "Red", "lower": np.array([0, 120, 70]), "upper": np.array([10, 255, 255])},      # Red
-            1: {"name": "Green", "lower": np.array([35, 120, 70]), "upper": np.array([85, 255, 255])},   # Green
-            2: {"name": "Blue", "lower": np.array([100, 120, 70]), "upper": np.array([130, 255, 255])},  # Blue
-            3: {"name": "Yellow", "lower": np.array([20, 120, 70]), "upper": np.array([30, 255, 255])}   # Yellow
+        # All blue markers - detect by position instead of color!
+        # Wider blue range to handle different lighting conditions (blinds up/down, etc.)
+        self.blue_range = {
+            "name": "Blue", 
+            "lower": np.array([90, 50, 50]),    # Much wider range for lighting changes
+            "upper": np.array([130, 255, 255])
         }
-        
-        # Alternative red range for red markers (red wraps around in HSV)
-        self.red_alt_range = {"lower": np.array([170, 120, 70]), "upper": np.array([180, 255, 255])}
         
         # Output directory for calibration data
         self.output_dir = "calibration_data"
@@ -75,7 +72,8 @@ class ColorCalibrationTest:
     
     def detect_colored_markers(self, image: np.ndarray) -> Optional[np.ndarray]:
         """
-        Detect colored markers on static base plate
+        Smart blue marker detection - infer position from pixel coordinates
+        All markers are blue, but we know the expected layout!
         
         Args:
             image: Input color image
@@ -83,83 +81,92 @@ class ColorCalibrationTest:
         Returns:
             Array of 4 corner points in pixel coordinates, or None if not found
         """
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        # Adaptive preprocessing based on image brightness
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        avg_brightness = np.mean(gray)
         
-        # Apply Gaussian blur to reduce noise
-        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+        if avg_brightness < 80:  # Dark image (blinds closed)
+            enhanced = cv2.convertScaleAbs(image, alpha=1.3, beta=25)
+        elif avg_brightness > 150:  # Bright image (blinds open)
+            enhanced = cv2.convertScaleAbs(image, alpha=0.9, beta=5)
+        else:  # Normal lighting
+            enhanced = cv2.convertScaleAbs(image, alpha=1.1, beta=15)
         
-        marker_centers = {}
+        # Convert to HSV
+        hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV)
+        
+        # Light blur to reduce noise
+        hsv = cv2.GaussianBlur(hsv, (3, 3), 0)
+        
         debug_dir = "debug_frames"
         if not os.path.exists(debug_dir):
             os.makedirs(debug_dir)
         
-        # Save original HSV for debugging
-        cv2.imwrite(f"{debug_dir}/hsv_image.jpg", hsv)
+        cv2.imwrite(f"{debug_dir}/enhanced.jpg", enhanced)
+        cv2.imwrite(f"{debug_dir}/hsv.jpg", hsv)
         
-        for marker_id, color_info in self.color_ranges.items():
-            color_name = color_info["name"]
-            
-            # Create mask for this color
-            mask = cv2.inRange(hsv, color_info["lower"], color_info["upper"])
-            
-            # Special handling for red (which wraps around in HSV)
-            if marker_id == 0:  # Red marker
-                mask_alt = cv2.inRange(hsv, self.red_alt_range["lower"], self.red_alt_range["upper"])
-                mask = cv2.bitwise_or(mask, mask_alt)
-            
-            # Clean up the mask
-            kernel = np.ones((5, 5), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            
-            # Save debug mask
-            cv2.imwrite(f"{debug_dir}/mask_{color_name.lower()}.jpg", mask)
-            
-            # Find contours
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Find the largest contour (should be our marker)
-                largest_contour = max(contours, key=cv2.contourArea)
-                area = cv2.contourArea(largest_contour)
-                
-                # Check if the area is reasonable for a 4cm marker
-                if area > 100:  # Minimum area threshold
-                    # Calculate the center of the contour
-                    M = cv2.moments(largest_contour)
-                    if M["m00"] != 0:
-                        center_x = int(M["m10"] / M["m00"])
-                        center_y = int(M["m01"] / M["m00"])
-                        marker_centers[marker_id] = [center_x, center_y]
-                        
-                        print(f"   ✅ Found {color_name} marker at ({center_x}, {center_y})")
-                    else:
-                        print(f"   ⚠️ {color_name} marker found but center calculation failed")
-                else:
-                    print(f"   ⚠️ {color_name} marker too small (area: {area})")
-            else:
-                print(f"   ❌ No {color_name} marker detected")
+        # Detect ALL blue markers
+        mask = cv2.inRange(hsv, self.blue_range["lower"], self.blue_range["upper"])
         
-        # Check if we have all 4 expected markers
-        if len(marker_centers) != 4:
-            missing = []
-            for i in range(4):
-                if i not in marker_centers:
-                    missing.append(self.color_ranges[i]["name"])
-            print(f"⚠️ Missing colored markers: {missing}")
-            print(f"💡 Debug images saved to '{debug_dir}/' - check color masks")
+        # Simple cleanup
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        
+        cv2.imwrite(f"{debug_dir}/mask_blue_all.jpg", mask)
+        
+        # Find all blue contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        blue_markers = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area > 75:  # Lower threshold since we need all 4
+                # Get center
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    center_x = int(M["m10"] / M["m00"])
+                    center_y = int(M["m01"] / M["m00"])
+                    blue_markers.append([center_x, center_y, area])
+                    print(f"   🔵 Blue marker: ({center_x}, {center_y}) area: {area:.0f}")
+        
+        if len(blue_markers) != 4:
+            print(f"   ⚠️ Found {len(blue_markers)} blue markers, need exactly 4")
             return None
         
-        # Arrange corners in consistent order: [0, 1, 2, 3] -> [Red, Green, Blue, Yellow]
+        # Sort markers by position to assign corners
+        # Expected layout: Red=Top-Left, Green=Top-Right, Yellow=Bottom-Left, Blue=Bottom-Right
+        markers = np.array(blue_markers)
+        
+        # Sort by Y coordinate first (top vs bottom)
+        top_markers = markers[markers[:, 1] < np.median(markers[:, 1])]
+        bottom_markers = markers[markers[:, 1] >= np.median(markers[:, 1])]
+        
+        # Sort top markers by X (left to right) -> Red(TL), Green(TR)
+        top_sorted = top_markers[np.argsort(top_markers[:, 0])]
+        red_marker = top_sorted[0][:2]    # Top-left
+        green_marker = top_sorted[1][:2]  # Top-right
+        
+        # Sort bottom markers by X (left to right) -> Yellow(BL), Blue(BR)
+        bottom_sorted = bottom_markers[np.argsort(bottom_markers[:, 0])]
+        yellow_marker = bottom_sorted[0][:2]  # Bottom-left
+        blue_marker = bottom_sorted[1][:2]    # Bottom-right
+        
+        print(f"   📍 Assigned positions:")
+        print(f"      Red (TL): ({red_marker[0]:.0f}, {red_marker[1]:.0f})")
+        print(f"      Green (TR): ({green_marker[0]:.0f}, {green_marker[1]:.0f})")
+        print(f"      Yellow (BL): ({yellow_marker[0]:.0f}, {yellow_marker[1]:.0f})")
+        print(f"      Blue (BR): ({blue_marker[0]:.0f}, {blue_marker[1]:.0f})")
+        
+        # Arrange corners: [Red, Green, Yellow, Blue] -> [TL, TR, BL, BR]
         corner_points = np.array([
-            marker_centers[0],  # Red (Top-left)
-            marker_centers[1],  # Green (Top-right)  
-            marker_centers[3],  # Yellow (Bottom-left)
-            marker_centers[2]   # Blue (Bottom-right)
+            red_marker,    # Red (Top-left)
+            green_marker,  # Green (Top-right)  
+            yellow_marker, # Yellow (Bottom-left)
+            blue_marker    # Blue (Bottom-right)
         ], dtype=np.float32)
         
-        print(f"✅ Detected all 4 colored markers!")
+        print(f"✅ Found all 4 blue markers and assigned positions!")
         return corner_points
     
     def preview_detection(self):
@@ -168,11 +175,12 @@ class ColorCalibrationTest:
             print("❌ Camera not initialized")
             return
         
-        print("\n👁️ Live Color Detection Preview")
-        print("=" * 30)
-        print("📋 Position your camera to see all 4 colored markers")
-        print("🌈 Red=Top-Left, Green=Top-Right, Yellow=Bottom-Left, Blue=Bottom-Right")
-        print("💡 Green rectangles = detected markers")
+        print("\n👁️ Live Blue Marker Detection Preview")
+        print("=" * 40)
+        print("📋 Position your camera to see all 4 BLUE markers")
+        print("🔵 All markers should be BLUE - position determines identity:")
+        print("   Top-Left=Red, Top-Right=Green, Bottom-Left=Yellow, Bottom-Right=Blue")
+        print("💡 Green rectangles = detected markers with assigned positions")
         print("❌ Press ESC or 'q' to exit preview")
         print("\nStarting preview...")
         
@@ -196,29 +204,37 @@ class ColorCalibrationTest:
                 corners = self.detect_colored_markers(color_image)
                 
                 if corners is not None:
-                    # Draw detected corners
-                    corners_int = corners.astype(np.int32)
+                    # Draw detected corners as a proper rectangle
+                    # Reorder corners for proper rectangle drawing: [TL, TR, BR, BL]
+                    # Current order is [TL, TR, BL, BR], need to swap BL and BR
+                    corners_rect = np.array([
+                        corners[0],  # TL (Top-Left)
+                        corners[1],  # TR (Top-Right)  
+                        corners[3],  # BR (Bottom-Right)
+                        corners[2]   # BL (Bottom-Left)
+                    ])
+                    corners_int = corners_rect.astype(np.int32)
                     cv2.polylines(preview_image, [corners_int], True, (0, 255, 0), 3)
                     
-                    # Number and color the corners
-                    colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)]  # BGR
-                    names = ["Red", "Green", "Blue", "Yellow"]
+                    # Position-based labels and colors
+                    colors = [(255, 255, 255), (255, 255, 255), (255, 255, 255), (255, 255, 255)]  # All white circles
+                    position_names = ["TL", "TR", "BL", "BR"]  # Simple position labels
                     
                     for i, corner in enumerate(corners):
                         x, y = int(corner[0]), int(corner[1])
                         cv2.circle(preview_image, (x, y), 12, colors[i], -1)
-                        cv2.circle(preview_image, (x, y), 12, (255, 255, 255), 2)
-                        cv2.putText(preview_image, names[i], (x-30, y-20), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        cv2.circle(preview_image, (x, y), 12, (0, 255, 0), 2)  # Green border
+                        cv2.putText(preview_image, position_names[i], (x-15, y-20), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
                     # Status text
-                    cv2.putText(preview_image, "✓ All 4 colored markers detected", (10, 30), 
+                    cv2.putText(preview_image, "✓ All 4 blue markers detected", (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 else:
                     # Status text
                     cv2.putText(preview_image, "✗ Markers not detected", (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    cv2.putText(preview_image, "Check marker colors and lighting", (10, 60), 
+                    cv2.putText(preview_image, "Check blue markers and lighting", (10, 60), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 
                 # Show the frame
@@ -242,12 +258,12 @@ class ColorCalibrationTest:
             print("❌ Camera not initialized")
             return False
         
-        print(f"\n🎨 Starting Color Marker Calibration")
+        print(f"\n🔵 Starting Blue Marker Calibration")
         print("=" * 40)
         print(f"📊 Will take {num_samples} samples")
-        print("📋 Make sure all 4 colored markers are clearly visible")
-        print("🌈 Red=Top-Left, Green=Top-Right, Yellow=Bottom-Left, Blue=Bottom-Right")
-        print("🏗️ Ensure 35x35cm base plate with 4x4cm colored markers is in view")
+        print("📋 Make sure all 4 BLUE markers are clearly visible")
+        print("🔵 Position determines identity: TL=Red, TR=Green, BL=Yellow, BR=Blue")
+        print("🏗️ Ensure 35x35cm base plate with 4x4cm BLUE markers is in view")
         print("🚫 Remove any balls or objects that might block the markers")
         print("\nPress ENTER when ready...")
         input()
@@ -288,16 +304,16 @@ class ColorCalibrationTest:
                     corners_int = corners.astype(np.int32)
                     cv2.polylines(debug_image, [corners_int], True, (0, 255, 0), 3)
                     
-                    # Number and color the corners
-                    colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255)]  # BGR
-                    names = ["Red", "Green", "Blue", "Yellow"]
+                    # Position-based labels for saved images
+                    colors = [(255, 255, 255), (255, 255, 255), (255, 255, 255), (255, 255, 255)]  # All white circles
+                    position_names = ["TL", "TR", "BL", "BR"]
                     
                     for j, corner in enumerate(corners):
                         x, y = int(corner[0]), int(corner[1])
                         cv2.circle(debug_image, (x, y), 12, colors[j], -1)
-                        cv2.circle(debug_image, (x, y), 12, (255, 255, 255), 2)
-                        cv2.putText(debug_image, f"{j+1}-{names[j]}", (x-40, y-20), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                        cv2.circle(debug_image, (x, y), 12, (0, 255, 0), 2)
+                        cv2.putText(debug_image, f"{j+1}-{position_names[j]}", (x-25, y-20), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     
                     cv2.imwrite(frame_filename, debug_image)
                     images_saved.append(frame_filename)
@@ -306,8 +322,9 @@ class ColorCalibrationTest:
                     print(f"   📁 Saved: {frame_filename}")
                     
                     # Show corner coordinates
+                    position_names = ["TL", "TR", "BL", "BR"]
                     for j, corner in enumerate(corners):
-                        print(f"      {names[j]}: ({corner[0]:.1f}, {corner[1]:.1f})")
+                        print(f"      {position_names[j]}: ({corner[0]:.1f}, {corner[1]:.1f})")
                 
                 else:
                     print(f"   ❌ Sample {i+1} failed - not all markers detected")
@@ -330,9 +347,9 @@ class ColorCalibrationTest:
                 print(f"📊 Used {len(corner_samples)}/{num_samples} valid samples")
                 print("📐 Average corner positions:")
                 
-                names = ["Red", "Green", "Blue", "Yellow"]
+                position_names = ["TL", "TR", "BL", "BR"]
                 for i, corner in enumerate(self.table_corners_pixels):
-                    print(f"   {names[i]}: ({corner[0]:.2f}, {corner[1]:.2f})")
+                    print(f"   {position_names[i]}: ({corner[0]:.2f}, {corner[1]:.2f})")
                 
                 # Save calibration data
                 self.save_calibration_data(images_saved, len(corner_samples))
@@ -359,8 +376,9 @@ class ColorCalibrationTest:
         
         calibration_data = {
             "timestamp": timestamp,
-            "calibration_type": "color_markers",
-            "marker_colors": ["Red", "Green", "Blue", "Yellow"],
+            "calibration_type": "blue_markers_position_based",
+            "marker_colors": ["Blue", "Blue", "Blue", "Blue"],  # All blue!
+            "marker_positions": ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"],
             "marker_ids": [0, 1, 2, 3],
             "base_plate_size_cm": 35,      # 35x35cm base plate
             "table_size_cm": 25,           # 25x25cm tilting table
@@ -370,8 +388,9 @@ class ColorCalibrationTest:
             "images_saved": images_saved,
             "camera_resolution": [640, 480],
             "image_orientation": "flipped_180_degrees",
-            "color_ranges": {str(k): {"name": v["name"], "lower": v["lower"].tolist(), "upper": v["upper"].tolist()} 
-                           for k, v in self.color_ranges.items()}
+            "color_ranges": {"blue_only": {"name": self.blue_range["name"], 
+                                          "lower": self.blue_range["lower"].tolist(), 
+                                          "upper": self.blue_range["upper"].tolist()}}
         }
         
         # Save as JSON
@@ -398,10 +417,10 @@ class ColorCalibrationTest:
 
 def main():
     """Main calibration test"""
-    print("🎨 Color Marker Calibration Test")
-    print("===============================")
-    print("This will calibrate your camera to detect colored markers.")
-    print("Make sure your base plate with 4 colored markers is visible.\n")
+    print("🔵 Blue Marker Position-Based Calibration")
+    print("=========================================")
+    print("This will calibrate using 4 BLUE markers - position determines identity!")
+    print("Make sure your base plate with 4 blue markers is visible.\n")
     
     calibrator = ColorCalibrationTest()
     

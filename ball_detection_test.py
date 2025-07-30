@@ -1,12 +1,12 @@
 """
-Ball Detection Test - ArUco Version
+Ball Detection Test - Blue Marker Version
 
-This script tests ball detection on your ArUco-calibrated base plate.
+This script tests ball detection on your blue marker calibrated base plate.
 Place a white ping pong ball on your table and see if it gets detected.
 
 Setup Requirements:
-- Run camera_calibration_test.py first to calibrate ArUco markers
-- 35x35cm base plate with ArUco markers (IDs 0,1,2,3)
+- Run camera_calibration_color.py first to calibrate blue markers
+- 35x35cm base plate with 4 blue markers at corners
 - White ping pong ball on the tilting table surface
 
 Usage: python ball_detection_test.py
@@ -20,17 +20,9 @@ import json
 from typing import Optional, Tuple
 import pyrealsense2 as rs
 
-# Import ArUco for marker detection
-try:
-    import cv2.aruco as aruco
-    ARUCO_AVAILABLE = True
-except ImportError:
-    ARUCO_AVAILABLE = False
-    print("⚠️ ArUco not available - install with: pip install opencv-contrib-python")
 
-
-class ArUcoBallDetectionTest:
-    """Test ball detection with ArUco-calibrated camera"""
+class BlueMarkerBallDetectionTest:
+    """Test ball detection with blue marker calibrated camera"""
     
     def __init__(self):
         self.pipeline = None
@@ -58,17 +50,17 @@ class ArUcoBallDetectionTest:
         self.load_latest_calibration()
     
     def load_latest_calibration(self):
-        """Load the most recent calibration data"""
+        """Load the most recent blue marker calibration data"""
         calib_dir = "calibration_data"
         if not os.path.exists(calib_dir):
-            print("❌ No calibration data found. Run camera_calibration_test.py first.")
+            print("❌ No calibration data found. Run camera_calibration_color.py first.")
             return False
         
-        # Find latest calibration file
-        json_files = [f for f in os.listdir(calib_dir) if f.startswith("calibration_") and f.endswith(".json")]
+        # Find latest color calibration file
+        json_files = [f for f in os.listdir(calib_dir) if f.startswith("color_calibration_") and f.endswith(".json")]
         
         if not json_files:
-            print("❌ No calibration files found.")
+            print("❌ No blue marker calibration files found.")
             return False
         
         # Sort by timestamp (filename contains timestamp)
@@ -81,13 +73,12 @@ class ArUcoBallDetectionTest:
             
             self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
             
-            # Flip calibration corners to match flipped image orientation
-            # When image is rotated 180°, coordinates transform: (x,y) -> (640-x, 480-y)
-            self.table_corners_pixels[:, 0] = 640 - self.table_corners_pixels[:, 0]  # Flip X
-            self.table_corners_pixels[:, 1] = 480 - self.table_corners_pixels[:, 1]  # Flip Y
+            # Note: Blue marker calibration already accounts for 180° rotation during calibration
+            # No coordinate flipping needed since calibration was done with rotated images
             
-            print(f"✅ Loaded calibration from: {latest_file}")
-            print(f"📐 Table corners loaded and flipped: {self.table_corners_pixels.shape}")
+            print(f"✅ Loaded blue marker calibration from: {latest_file}")
+            print(f"📐 Table corners loaded: {self.table_corners_pixels.shape}")
+            print(f"🔵 Calibration type: {calib_data.get('calibration_type', 'unknown')}")
             return True
             
         except Exception as e:
@@ -153,16 +144,52 @@ class ArUcoBallDetectionTest:
         # Convert to HSV
         hsv = cv2.cvtColor(color_frame, cv2.COLOR_BGR2HSV)
         
+        # Adaptive thresholding based on image brightness
+        gray = cv2.cvtColor(color_frame, cv2.COLOR_BGR2GRAY)
+        avg_brightness = np.mean(gray)
+        
+        if avg_brightness > 150:  # Very bright/light background
+            # Tighter thresholds for bright scenes - look for very white objects
+            lower_white = np.array([0, 0, 200])     # Higher brightness threshold
+            upper_white = np.array([180, 30, 255]) # Lower saturation tolerance
+            print(f"🔆 Bright scene detected (avg: {avg_brightness:.0f}) - using tight thresholds")
+        elif avg_brightness < 80:  # Dark scene
+            # More lenient thresholds for dark scenes
+            lower_white = np.array([0, 0, 150])     # Lower brightness threshold
+            upper_white = np.array([180, 70, 255]) # Higher saturation tolerance
+            print(f"🌙 Dark scene detected (avg: {avg_brightness:.0f}) - using lenient thresholds")
+        else:  # Normal lighting
+            # Default thresholds
+            lower_white = self.lower_white
+            upper_white = self.upper_white
+        
         # Create mask for white ball
-        mask = cv2.inRange(hsv, self.lower_white, self.upper_white)
+        mask = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # For bright backgrounds, also try edge-based detection
+        if avg_brightness > 150:
+            # Add edge detection to help with low contrast situations
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # Dilate edges to create thicker boundaries
+            kernel_edge = np.ones((3, 3), np.uint8)
+            edges_dilated = cv2.dilate(edges, kernel_edge, iterations=1)
+            
+            # Combine HSV mask with edge mask for better detection
+            mask = cv2.bitwise_or(mask, edges_dilated)
         
         # Store original mask for debugging
         self.debug_mask = mask.copy()
         
-        # Clean up mask
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        # Clean up mask - more aggressive cleaning for bright scenes
+        if avg_brightness > 150:
+            kernel = np.ones((7, 7), np.uint8)  # Larger kernel for bright scenes
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        else:
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
         # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -170,15 +197,27 @@ class ArUcoBallDetectionTest:
         if not contours:
             return None
         
+        # Adaptive area thresholds based on brightness
+        if avg_brightness > 150:
+            # Stricter requirements for bright scenes
+            min_area = 80   # Slightly larger minimum
+            max_area = 6000 # Smaller maximum to avoid large bright areas
+            circularity_thresh = 0.7  # Higher circularity requirement
+        else:
+            # Standard requirements
+            min_area = self.min_contour_area
+            max_area = self.max_contour_area
+            circularity_thresh = self.circularity_threshold
+        
         # Filter by area and circularity
         valid_contours = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if self.min_contour_area < area < self.max_contour_area:
+            if min_area < area < max_area:
                 perimeter = cv2.arcLength(contour, True)
                 if perimeter > 0:
                     circularity = 4 * np.pi * area / (perimeter * perimeter)
-                    if circularity > self.circularity_threshold:
+                    if circularity > circularity_thresh:
                         valid_contours.append((contour, area))
         
         if not valid_contours:
@@ -201,7 +240,7 @@ class ArUcoBallDetectionTest:
         return (cx_adjusted, cy_adjusted)
     
     def pixel_to_world_coordinates(self, pixel_x: float, pixel_y: float) -> Tuple[float, float]:
-        """Convert pixel coordinates to world coordinates using ArUco calibration"""
+        """Convert pixel coordinates to world coordinates using blue marker calibration"""
         if self.table_corners_pixels is None:
             # Fallback calculation for square table
             world_x = (pixel_x - 320) / 320 * (self.table_size / 2)   # ±12.5cm
@@ -210,12 +249,12 @@ class ArUcoBallDetectionTest:
         
         try:
             # Define world coordinates for square tilting table (25cm x 25cm)
-            # Note: ArUco markers are on the base plate, but we want table coordinates
+            # Blue markers define the corners of our table area
             table_corners_world = np.array([
                 [-self.table_size/2, -self.table_size/2],   # Top-left: (-12.5cm, -12.5cm)
                 [self.table_size/2, -self.table_size/2],    # Top-right: (+12.5cm, -12.5cm)
-                [self.table_size/2, self.table_size/2],     # Bottom-right: (+12.5cm, +12.5cm)
-                [-self.table_size/2, self.table_size/2]     # Bottom-left: (-12.5cm, +12.5cm)
+                [-self.table_size/2, self.table_size/2],    # Bottom-left: (-12.5cm, +12.5cm)
+                [self.table_size/2, self.table_size/2]      # Bottom-right: (+12.5cm, +12.5cm)
             ], dtype=np.float32)
             
             # Create perspective transformation matrix
@@ -254,7 +293,7 @@ class ArUcoBallDetectionTest:
         print(f"\n🔍 Crop mode: {'ENABLED' if self.use_crop else 'DISABLED'}")
         print(f"📏 Crop margin: {self.crop_margin}px")
         print(f"🎯 HSV range: {self.lower_white} to {self.upper_white}")
-        print("📝 Note: Image and calibration are automatically flipped 180° for correct orientation")
+        print("📝 Note: Image is automatically flipped 180° to match blue marker calibration")
         print("\nStarting in 3 seconds...")
         time.sleep(3)
         
@@ -282,11 +321,37 @@ class ArUcoBallDetectionTest:
                 
                 # Draw table outline on full image
                 if self.table_corners_pixels is not None:
-                    corners_int = self.table_corners_pixels.astype(np.int32)
+                    # Reorder corners for proper rectangle drawing: [TL, TR, BR, BL]
+                    # Current order is [TL, TR, BL, BR], need to swap BL and BR
+                    corners_rect = np.array([
+                        self.table_corners_pixels[0],  # TL (Top-Left)
+                        self.table_corners_pixels[1],  # TR (Top-Right)  
+                        self.table_corners_pixels[3],  # BR (Bottom-Right)
+                        self.table_corners_pixels[2]   # BL (Bottom-Left)
+                    ])
+                    corners_int = corners_rect.astype(np.int32)
                     cv2.polylines(display_image, [corners_int], True, (0, 255, 0), 2)
                 
                 # Detect ball on cropped image
                 ball_pos = self.detect_ball(cropped_image, crop_offset)
+                
+                # Show adaptive lighting info
+                if cropped_image.size > 0:
+                    gray_crop = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+                    crop_brightness = np.mean(gray_crop)
+                    
+                    if crop_brightness > 150:
+                        lighting_status = f"🔆 Bright scene (avg: {crop_brightness:.0f}) - Enhanced detection"
+                        status_color = (0, 255, 255)  # Yellow
+                    elif crop_brightness < 80:
+                        lighting_status = f"🌙 Dark scene (avg: {crop_brightness:.0f}) - Lenient detection"  
+                        status_color = (255, 0, 255)  # Magenta
+                    else:
+                        lighting_status = f"💡 Normal lighting (avg: {crop_brightness:.0f})"
+                        status_color = (255, 255, 255)  # White
+                    
+                    cv2.putText(display_image, lighting_status, (10, 120), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
                 
                 if ball_pos:
                     pixel_x, pixel_y = ball_pos
@@ -309,7 +374,7 @@ class ArUcoBallDetectionTest:
                     
                     # Console output
                     if frame_count % 10 == 0:  # Every 10 frames
-                        print(f"🎯 Ball at: ({world_x:.3f}, {world_y:.3f})m | Range: X±{self.table_width/2:.3f}m, Y±{self.table_height/2:.3f}m")
+                        print(f"🎯 Ball at: ({world_x:.3f}, {world_y:.3f})m | Range: X±{self.table_size/2:.3f}m, Y±{self.table_size/2:.3f}m")
                 
                 else:
                     cv2.putText(display_image, "No ball detected", (10, 30), 
@@ -421,15 +486,15 @@ class ArUcoBallDetectionTest:
 
 def main():
     """Main test function"""
-    print("🏓 Ball Detection Test")
-    print("=====================")
+    print("🏓 Ball Detection Test - Blue Marker Version")
+    print("============================================")
     
-    tester = ArUcoBallDetectionTest()
+    tester = BlueMarkerBallDetectionTest()
     
     try:
         if tester.table_corners_pixels is None:
-            print("❌ No calibration data found.")
-            print("💡 Run 'python camera_calibration_test.py' first")
+            print("❌ No blue marker calibration data found.")
+            print("💡 Run 'python camera_calibration_color.py' first")
             return
         
         if tester.initialize_camera():
