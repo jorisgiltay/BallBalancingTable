@@ -246,15 +246,32 @@ class BlueMarkerBallDetectionTest:
             world_x = (pixel_x - 320) / 320 * (self.table_size / 2)   # ±12.5cm
             world_y = (pixel_y - 240) / 240 * (self.table_size / 2)   # ±12.5cm
             return world_x, world_y
-        
+
         try:
-            # Define world coordinates for square tilting table (25cm x 25cm)
-            # Blue markers define the corners of our table area
+            # Load base plate size from calibration data
+            calib_dir = "calibration_data"
+            json_files = [f for f in os.listdir(calib_dir) if f.startswith("color_calibration_") and f.endswith(".json")]
+            
+            if json_files:
+                latest_file = sorted(json_files)[-1]
+                json_path = os.path.join(calib_dir, latest_file)
+                
+                with open(json_path, 'r') as f:
+                    calib_data = json.load(f)
+                
+                # Use actual base plate size from calibration (35cm -> 0.35m)
+                base_plate_size = calib_data.get("base_plate_size_cm", 35) / 100.0
+            else:
+                # Fallback to default
+                base_plate_size = 0.35
+            
+            # Define world coordinates for actual base plate (35cm x 35cm)
+            # Blue markers are at the corners of the base plate
             table_corners_world = np.array([
-                [-self.table_size/2, -self.table_size/2],   # Top-left: (-12.5cm, -12.5cm)
-                [self.table_size/2, -self.table_size/2],    # Top-right: (+12.5cm, -12.5cm)
-                [-self.table_size/2, self.table_size/2],    # Bottom-left: (-12.5cm, +12.5cm)
-                [self.table_size/2, self.table_size/2]      # Bottom-right: (+12.5cm, +12.5cm)
+                [-base_plate_size/2, -base_plate_size/2],   # Top-left: (-17.5cm, -17.5cm)
+                [base_plate_size/2, -base_plate_size/2],    # Top-right: (+17.5cm, -17.5cm)
+                [-base_plate_size/2, base_plate_size/2],    # Bottom-left: (-17.5cm, +17.5cm)
+                [base_plate_size/2, base_plate_size/2]      # Bottom-right: (+17.5cm, +17.5cm)
             ], dtype=np.float32)
             
             # Create perspective transformation matrix
