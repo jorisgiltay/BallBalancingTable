@@ -239,11 +239,17 @@ class RealSenseCameraInterface:
                 
                 # Update world coordinates based on actual base plate size
                 base_plate_size = calib_data.get("base_plate_size_cm", 35) / 100.0  # Convert to meters
+                marker_size = calib_data.get("marker_size_cm", 4) / 100.0  # Convert to meters
+                
+                # Blue markers are placed at corners, but their centers are offset inward by half marker size
+                marker_offset = marker_size / 2  # 2cm offset from plate edge to marker center
+                marker_center_distance = (base_plate_size / 2) - marker_offset  # Distance from center to marker center
+                
                 self.table_corners_world = np.array([
-                    [-base_plate_size/2, -base_plate_size/2, 0],  # Top-left
-                    [base_plate_size/2, -base_plate_size/2, 0],   # Top-right
-                    [-base_plate_size/2, base_plate_size/2, 0],   # Bottom-left
-                    [base_plate_size/2, base_plate_size/2, 0]     # Bottom-right
+                    [-marker_center_distance, -marker_center_distance, 0],  # Top-left marker center
+                    [marker_center_distance, -marker_center_distance, 0],   # Top-right marker center
+                    [-marker_center_distance, marker_center_distance, 0],   # Bottom-left marker center
+                    [marker_center_distance, marker_center_distance, 0]     # Bottom-right marker center
                 ], dtype=np.float32)
                 
                 print(f"✅ Loaded blue marker calibration from: {latest_file}")

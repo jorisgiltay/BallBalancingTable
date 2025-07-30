@@ -266,12 +266,17 @@ class BlueMarkerBallDetectionTest:
                 base_plate_size = 0.35
             
             # Define world coordinates for actual base plate (35cm x 35cm)
-            # Blue markers are at the corners of the base plate
+            # Blue markers are 4x4cm squares placed at corners, so marker centers are 2cm inward from plate edges
+            # Actual corners: ±17.5cm, marker centers: ±15.5cm from center
+            marker_offset = 0.02  # 2cm offset from plate edge to marker center
+            plate_edge = base_plate_size / 2  # 17.5cm from center to plate edge
+            marker_center_distance = plate_edge - marker_offset  # 15.5cm from center to marker center
+            
             table_corners_world = np.array([
-                [-base_plate_size/2, -base_plate_size/2],   # Top-left: (-17.5cm, -17.5cm)
-                [base_plate_size/2, -base_plate_size/2],    # Top-right: (+17.5cm, -17.5cm)
-                [-base_plate_size/2, base_plate_size/2],    # Bottom-left: (-17.5cm, +17.5cm)
-                [base_plate_size/2, base_plate_size/2]      # Bottom-right: (+17.5cm, +17.5cm)
+                [-marker_center_distance, -marker_center_distance],   # Top-left marker center: (-15.5cm, -15.5cm)
+                [marker_center_distance, -marker_center_distance],    # Top-right marker center: (+15.5cm, -15.5cm)
+                [-marker_center_distance, marker_center_distance],    # Bottom-left marker center: (-15.5cm, +15.5cm)
+                [marker_center_distance, marker_center_distance]      # Bottom-right marker center: (+15.5cm, +15.5cm)
             ], dtype=np.float32)
             
             # Create perspective transformation matrix
@@ -336,18 +341,86 @@ class BlueMarkerBallDetectionTest:
                 # Crop image to focus on table area
                 cropped_image, crop_offset = self.crop_image(color_image)
                 
-                # Draw table outline on full image
+                # Draw table outline on full image - show actual base plate edges, not marker centers
                 if self.table_corners_pixels is not None:
-                    # Reorder corners for proper rectangle drawing: [TL, TR, BR, BL]
-                    # Current order is [TL, TR, BL, BR], need to swap BL and BR
-                    corners_rect = np.array([
-                        self.table_corners_pixels[0],  # TL (Top-Left)
-                        self.table_corners_pixels[1],  # TR (Top-Right)  
-                        self.table_corners_pixels[3],  # BR (Bottom-Right)
-                        self.table_corners_pixels[2]   # BL (Bottom-Left)
-                    ])
-                    corners_int = corners_rect.astype(np.int32)
-                    cv2.polylines(display_image, [corners_int], True, (0, 255, 0), 2)
+                    try:
+                        # Load calibration data to get accurate measurements
+                        calib_dir = "calibration_data"
+                        json_files = [f for f in os.listdir(calib_dir) if f.startswith("color_calibration_") and f.endswith(".json")]
+                        
+                        if json_files:
+                            latest_file = sorted(json_files)[-1]
+                            json_path = os.path.join(calib_dir, latest_file)
+                            
+                            with open(json_path, 'r') as f:
+                                calib_data = json.load(f)
+                            
+                            # Simple approach: expand the marker center rectangle outward by 2cm equivalent pixels
+                            # Calculate the center of the marker rectangle
+                            center_x = np.mean(self.table_corners_pixels[:, 0])
+                            center_y = np.mean(self.table_corners_pixels[:, 1])
+                            
+                            # Calculate expansion factor: need to go from 31cm (marker center to center) to 35cm (edge to edge)
+                            # Current marker distance represents 31cm (35cm - 4cm), target is 35cm
+                            expansion_factor = 35.0 / 31.0  # ≈1.129
+                            
+                            # Expand each corner outward from the center
+                            plate_corners_pixel = []
+                            for corner in self.table_corners_pixels:
+                                # Vector from center to corner
+                                dx = corner[0] - center_x
+                                dy = corner[1] - center_y
+                                
+                                # Expand by factor
+                                new_x = center_x + (dx * expansion_factor)
+                                new_y = center_y + (dy * expansion_factor)
+                                
+                                plate_corners_pixel.append([new_x, new_y])
+                            
+                            plate_corners_pixel = np.array(plate_corners_pixel, dtype=np.float32)
+                            
+                            # Draw the expanded plate edge rectangle (green, thick)
+                            corners_rect = np.array([
+                                plate_corners_pixel[0],  # TL (Top-Left plate edge)
+                                plate_corners_pixel[1],  # TR (Top-Right plate edge)  
+                                plate_corners_pixel[3],  # BR (Bottom-Right plate edge)
+                                plate_corners_pixel[2]   # BL (Bottom-Left plate edge)
+                            ])
+                            corners_int = corners_rect.astype(np.int32)
+                            cv2.polylines(display_image, [corners_int], True, (0, 255, 0), 2)
+                            
+                            # Draw marker centers for reference (yellow, thin)
+                            marker_corners_rect = np.array([
+                                self.table_corners_pixels[0],  # TL marker center
+                                self.table_corners_pixels[1],  # TR marker center
+                                self.table_corners_pixels[3],  # BR marker center
+                                self.table_corners_pixels[2]   # BL marker center
+                            ])
+                            marker_corners_int = marker_corners_rect.astype(np.int32)
+                            cv2.polylines(display_image, [marker_corners_int], True, (0, 255, 255), 1)  # Yellow, thin line
+                            
+                        else:
+                            # No calibration data - just draw marker centers
+                            corners_rect = np.array([
+                                self.table_corners_pixels[0],  # TL
+                                self.table_corners_pixels[1],  # TR  
+                                self.table_corners_pixels[3],  # BR
+                                self.table_corners_pixels[2]   # BL
+                            ])
+                            corners_int = corners_rect.astype(np.int32)
+                            cv2.polylines(display_image, [corners_int], True, (0, 255, 0), 2)
+                            
+                    except Exception as e:
+                        print(f"⚠️ Error calculating plate edges: {e}")
+                        # Fallback to marker centers
+                        corners_rect = np.array([
+                            self.table_corners_pixels[0],  # TL
+                            self.table_corners_pixels[1],  # TR  
+                            self.table_corners_pixels[3],  # BR
+                            self.table_corners_pixels[2]   # BL
+                        ])
+                        corners_int = corners_rect.astype(np.int32)
+                        cv2.polylines(display_image, [corners_int], True, (0, 255, 0), 2)
                 
                 # Detect ball on cropped image
                 ball_pos = self.detect_ball(cropped_image, crop_offset)
