@@ -9,3 +9,6 @@ good_models/
 camera_test_frames/
 camera_frames/
 calibration_data/
+aruco_markers/
+color_markers/
+debug_frames/

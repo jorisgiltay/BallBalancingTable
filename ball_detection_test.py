@@ -1,8 +1,13 @@
 """
-Ball Detection Test
+Ball Detection Test - ArUco Version
 
-This script tests ball detection on your calibrated table.
-Place a white ping pong ball on your table/mousemat and see if it gets detected.
+This script tests ball detection on your ArUco-calibrated base plate.
+Place a white ping pong ball on your table and see if it gets detected.
+
+Setup Requirements:
+- Run camera_calibration_test.py first to calibrate ArUco markers
+- 35x35cm base plate with ArUco markers (IDs 0,1,2,3)
+- White ping pong ball on the tilting table surface
 
 Usage: python ball_detection_test.py
 """
@@ -15,17 +20,26 @@ import json
 from typing import Optional, Tuple
 import pyrealsense2 as rs
 
+# Import ArUco for marker detection
+try:
+    import cv2.aruco as aruco
+    ARUCO_AVAILABLE = True
+except ImportError:
+    ARUCO_AVAILABLE = False
+    print("⚠️ ArUco not available - install with: pip install opencv-contrib-python")
 
-class BallDetectionTest:
-    """Test ball detection with calibrated camera"""
+
+class ArUcoBallDetectionTest:
+    """Test ball detection with ArUco-calibrated camera"""
     
     def __init__(self):
         self.pipeline = None
         self.config = None
         self.table_corners_pixels = None
-        # Mousemat dimensions (18cm x 22cm)
-        self.table_width = 0.22   # 22cm width
-        self.table_height = 0.18  # 18cm height
+        
+        # Base plate and table dimensions  
+        self.base_plate_size = 0.35  # 35cm x 35cm base plate
+        self.table_size = 0.25       # 25cm x 25cm tilting table
         
         # Ball detector settings - More flexible for stationary detection
         self.lower_white = np.array([0, 0, 180])    # Lower brightness threshold
@@ -187,20 +201,21 @@ class BallDetectionTest:
         return (cx_adjusted, cy_adjusted)
     
     def pixel_to_world_coordinates(self, pixel_x: float, pixel_y: float) -> Tuple[float, float]:
-        """Convert pixel coordinates to world coordinates using calibration"""
+        """Convert pixel coordinates to world coordinates using ArUco calibration"""
         if self.table_corners_pixels is None:
-            # Fallback calculation for rectangular mousemat
-            world_x = (pixel_x - 320) / 320 * (self.table_width / 2)   # ±11cm
-            world_y = (pixel_y - 240) / 240 * (self.table_height / 2)  # ±9cm
+            # Fallback calculation for square table
+            world_x = (pixel_x - 320) / 320 * (self.table_size / 2)   # ±12.5cm
+            world_y = (pixel_y - 240) / 240 * (self.table_size / 2)   # ±12.5cm
             return world_x, world_y
         
         try:
-            # Define world coordinates for rectangular mousemat (22cm x 18cm)
+            # Define world coordinates for square tilting table (25cm x 25cm)
+            # Note: ArUco markers are on the base plate, but we want table coordinates
             table_corners_world = np.array([
-                [-self.table_width/2, -self.table_height/2],   # Top-left: (-11cm, -9cm)
-                [self.table_width/2, -self.table_height/2],    # Top-right: (+11cm, -9cm)
-                [self.table_width/2, self.table_height/2],     # Bottom-right: (+11cm, +9cm)
-                [-self.table_width/2, self.table_height/2]     # Bottom-left: (-11cm, +9cm)
+                [-self.table_size/2, -self.table_size/2],   # Top-left: (-12.5cm, -12.5cm)
+                [self.table_size/2, -self.table_size/2],    # Top-right: (+12.5cm, -12.5cm)
+                [self.table_size/2, self.table_size/2],     # Bottom-right: (+12.5cm, +12.5cm)
+                [-self.table_size/2, self.table_size/2]     # Bottom-left: (-12.5cm, +12.5cm)
             ], dtype=np.float32)
             
             # Create perspective transformation matrix
@@ -409,7 +424,7 @@ def main():
     print("🏓 Ball Detection Test")
     print("=====================")
     
-    tester = BallDetectionTest()
+    tester = ArUcoBallDetectionTest()
     
     try:
         if tester.table_corners_pixels is None:

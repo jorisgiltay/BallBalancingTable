@@ -23,6 +23,14 @@ from typing import Tuple, Optional, Dict, Any
 import threading
 import queue
 
+# Import ArUco for marker detection
+try:
+    import cv2.aruco as aruco
+    ARUCO_AVAILABLE = True
+except ImportError:
+    ARUCO_AVAILABLE = False
+    print("⚠️ ArUco not available - install with: pip install opencv-contrib-python")
+
 
 class BallDetector:
     """
@@ -203,7 +211,7 @@ class RealSenseCameraInterface:
     
     def load_existing_calibration(self) -> bool:
         """
-        Load existing calibration data from ball_detection_test calibration
+        Load existing calibration data (prioritize ArUco, fallback to corner detection)
         
         Returns:
             True if calibration loaded successfully
@@ -215,39 +223,63 @@ class RealSenseCameraInterface:
         if not os.path.exists(calib_dir):
             return False
         
-        # Find latest calibration file
-        json_files = [f for f in os.listdir(calib_dir) if f.startswith("calibration_") and f.endswith(".json")]
+        # Find calibration files (prioritize ArUco)
+        json_files = [f for f in os.listdir(calib_dir) if f.endswith(".json")]
         
         if not json_files:
             return False
         
-        # Sort by timestamp (filename contains timestamp)
-        latest_file = sorted(json_files)[-1]
-        json_path = os.path.join(calib_dir, latest_file)
+        # Sort by timestamp and prefer ArUco calibrations
+        aruco_files = [f for f in json_files if "aruco" in f]
+        corner_files = [f for f in json_files if "calibration_" in f and "aruco" not in f]
         
-        try:
-            with open(json_path, 'r') as f:
-                calib_data = json.load(f)
+        # Try ArUco calibration first
+        if aruco_files:
+            latest_file = sorted(aruco_files)[-1]
+            json_path = os.path.join(calib_dir, latest_file)
             
-            self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
+            try:
+                with open(json_path, 'r') as f:
+                    calib_data = json.load(f)
+                
+                self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
+                
+                print(f"✅ Loaded ArUco calibration from: {latest_file}")
+                print(f"📐 Base plate corners loaded: {self.table_corners_pixels.shape}")
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ Failed to load ArUco calibration: {e}")
+        
+        # Fallback to corner detection calibration
+        if corner_files:
+            latest_file = sorted(corner_files)[-1]
+            json_path = os.path.join(calib_dir, latest_file)
             
-            # Flip calibration corners to match flipped image orientation
-            # When image is rotated 180°, coordinates transform: (x,y) -> (640-x, 480-y)
-            self.table_corners_pixels[:, 0] = 640 - self.table_corners_pixels[:, 0]  # Flip X
-            self.table_corners_pixels[:, 1] = 480 - self.table_corners_pixels[:, 1]  # Flip Y
-            
-            print(f"✅ Loaded existing calibration from: {latest_file}")
-            print(f"📐 Table corners loaded and flipped: {self.table_corners_pixels.shape}")
-            return True
-            
-        except Exception as e:
-            print(f"⚠️ Failed to load existing calibration: {e}")
-            return False
+            try:
+                with open(json_path, 'r') as f:
+                    calib_data = json.load(f)
+                
+                self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
+                
+                # Flip calibration corners to match flipped image orientation
+                # When image is rotated 180°, coordinates transform: (x,y) -> (640-x, 480-y)
+                self.table_corners_pixels[:, 0] = 640 - self.table_corners_pixels[:, 0]  # Flip X
+                self.table_corners_pixels[:, 1] = 480 - self.table_corners_pixels[:, 1]  # Flip Y
+                
+                print(f"✅ Loaded corner detection calibration from: {latest_file}")
+                print(f"📐 Table corners loaded and flipped: {self.table_corners_pixels.shape}")
+                return True
+                
+            except Exception as e:
+                print(f"⚠️ Failed to load corner calibration: {e}")
+        
+        return False
     
     def calibrate_table_detection(self, num_samples: int = 10) -> bool:
         """
-        Calibrate the camera by detecting table corners
-        This should be run once with the table visible and no ball present
+        Calibrate the camera by detecting ArUco markers on static base plate
+        This should be run once with all 4 ArUco markers visible
         
         Args:
             num_samples: Number of samples to average for calibration
@@ -259,16 +291,19 @@ class RealSenseCameraInterface:
             print("❌ Camera not initialized")
             return False
             
-        print(f"🎯 Starting table calibration with {num_samples} samples...")
-        print("   Please ensure the table is visible and no ball is present")
-        print("   Press any key when ready...")
+        print(f"🎯 Starting ArUco marker calibration with {num_samples} samples...")
+        print("   Please ensure all 4 ArUco markers (IDs 0,1,2,3) are visible")
+        print("   Make sure no ball is blocking the markers")
+        print("   Recommended: 35x35cm base plate with 4x4cm markers")
+        print("   Markers placed 2cm from edges for optimal detection")
         
         try:
             import pyrealsense2 as rs
             
             corner_samples = []
+            successful_detections = 0
             
-            for i in range(num_samples):
+            for i in range(num_samples * 2):  # Allow more attempts
                 # Wait for a coherent pair of frames
                 frames = self.pipeline.wait_for_frames()
                 color_frame = frames.get_color_frame()
@@ -282,36 +317,77 @@ class RealSenseCameraInterface:
                 # Always flip image 180 degrees for correct camera orientation
                 color_image = cv2.rotate(color_image, cv2.ROTATE_180)
                 
-                # Detect table corners (you'll need to implement this based on your table)
+                # Detect ArUco markers
                 corners = self._detect_table_corners(color_image)
                 
                 if corners is not None:
                     corner_samples.append(corners)
-                    print(f"   Sample {i+1}/{num_samples} captured")
-                else:
-                    print(f"   Sample {i+1}/{num_samples} failed - retrying")
-                    i -= 1  # Retry this sample
+                    successful_detections += 1
+                    print(f"   ✅ Sample {successful_detections}/{num_samples} captured")
                     
-                time.sleep(0.1)
+                    if successful_detections >= num_samples:
+                        break
+                else:
+                    print(f"   ⚠️ Attempt {i+1} failed - ensure all 4 markers visible")
+                    
+                time.sleep(0.2)  # Slightly longer delay for marker detection
             
             if len(corner_samples) >= num_samples // 2:  # At least half successful
-                # Average the corner positions
+                # Average the corner positions for better accuracy
                 self.table_corners_pixels = np.mean(corner_samples, axis=0)
-                print("✅ Table calibration successful!")
-                print(f"   Table corners: {self.table_corners_pixels}")
+                
+                # Save calibration data
+                self._save_aruco_calibration()
+                
+                print("✅ ArUco marker calibration successful!")
+                print(f"   Base plate corners: {self.table_corners_pixels}")
+                print(f"   Calibration saved for future use")
                 return True
             else:
-                print("❌ Table calibration failed - not enough valid samples")
+                print("❌ ArUco calibration failed - not enough valid detections")
+                print("   Check that all 4 markers (IDs 0,1,2,3) are clearly visible")
                 return False
                 
         except Exception as e:
             print(f"❌ Calibration error: {e}")
             return False
     
+    def _save_aruco_calibration(self):
+        """Save ArUco calibration data to file"""
+        import os
+        import json
+        from datetime import datetime
+        
+        # Create calibration directory
+        calib_dir = "calibration_data"
+        os.makedirs(calib_dir, exist_ok=True)
+        
+        # Prepare calibration data
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        calib_data = {
+            "timestamp": timestamp,
+            "calibration_type": "aruco_markers",
+            "marker_dictionary": "DICT_4X4_50",
+            "marker_ids": [0, 1, 2, 3],
+            "base_plate_size_cm": 35,  # 35x35cm recommended for 4x4cm markers
+            "table_size_cm": 25,
+            "marker_size_cm": 4,       # 4x4cm ArUco markers
+            "corner_pixels": self.table_corners_pixels.tolist(),
+            "image_orientation": "flipped_180_degrees"
+        }
+        
+        # Save to JSON file
+        json_path = os.path.join(calib_dir, f"aruco_calibration_{timestamp}.json")
+        try:
+            with open(json_path, 'w') as f:
+                json.dump(calib_data, f, indent=2)
+            print(f"   📁 Calibration saved: {json_path}")
+        except Exception as e:
+            print(f"   ⚠️ Failed to save calibration: {e}")
+    
     def _detect_table_corners(self, image: np.ndarray) -> Optional[np.ndarray]:
         """
-        Detect table corners in the image
-        This is a placeholder - implement based on your specific table design
+        Detect table corners using ArUco markers on static base plate
         
         Args:
             image: Input color image
@@ -319,10 +395,70 @@ class RealSenseCameraInterface:
         Returns:
             Array of 4 corner points in pixel coordinates, or None if not found
         """
-        # Placeholder implementation - you'll need to customize this
-        # based on your table's appearance (color, markers, etc.)
+        if not ARUCO_AVAILABLE:
+            print("❌ ArUco not available - falling back to corner detection")
+            return self._detect_corners_fallback(image)
         
-        # Example: Detect by color (if table has distinct color)
+        # Convert to grayscale for ArUco detection
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Define ArUco dictionary (DICT_4X4_50 recommended for reliability)
+        # Handle both old and new OpenCV ArUco API
+        try:
+            # New OpenCV 4.7+ API
+            aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+            detector = cv2.aruco.ArucoDetector(aruco_dict)
+            corners, ids, _ = detector.detectMarkers(gray)
+        except AttributeError:
+            try:
+                # Older OpenCV API
+                aruco_dict = aruco.Dictionary_get(aruco.DICT_4X4_50)
+                aruco_params = aruco.DetectorParameters_create()
+                corners, ids, _ = aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
+            except AttributeError:
+                # Even older API fallback
+                aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+                corners, ids, _ = aruco.detectMarkers(gray, aruco_dict)
+        
+        if ids is None or len(ids) < 4:
+            print(f"⚠️ Only found {len(ids) if ids is not None else 0}/4 ArUco markers")
+            return None
+        
+        # We expect markers with IDs 0, 1, 2, 3 for the four corners
+        expected_ids = [0, 1, 2, 3]
+        marker_centers = {}
+        
+        for i, marker_id in enumerate(ids.flatten()):
+            if marker_id in expected_ids:
+                # Get center of marker
+                marker_corner = corners[i][0]  # corners[i] is shape (1, 4, 2)
+                center_x = np.mean(marker_corner[:, 0])
+                center_y = np.mean(marker_corner[:, 1])
+                marker_centers[marker_id] = [center_x, center_y]
+        
+        # Check if we have all 4 expected markers
+        if len(marker_centers) != 4:
+            missing = set(expected_ids) - set(marker_centers.keys())
+            print(f"⚠️ Missing ArUco markers: {missing}")
+            return None
+        
+        # Arrange corners in consistent order: [0, 1, 2, 3] -> [TL, TR, BR, BL]
+        # You can customize this mapping based on how you place your markers
+        corner_points = np.array([
+            marker_centers[0],  # Top-left
+            marker_centers[1],  # Top-right  
+            marker_centers[2],  # Bottom-right
+            marker_centers[3]   # Bottom-left
+        ], dtype=np.float32)
+        
+        print(f"✅ Detected all 4 ArUco markers: {list(marker_centers.keys())}")
+        return corner_points
+    
+    def _detect_corners_fallback(self, image: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Fallback corner detection method when ArUco is not available
+        """
+        # Original corner detection code as fallback
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # Use adaptive threshold or edge detection
@@ -339,7 +475,7 @@ class RealSenseCameraInterface:
             
             # Check if it's a quadrilateral with reasonable area
             if len(approx) == 4 and cv2.contourArea(contour) > 10000:
-                # Sort corners in consistent order (top-left, top-right, bottom-right, bottom-left)
+                # Sort corners in consistent order
                 corners = approx.reshape(4, 2).astype(np.float32)
                 return self._sort_corners(corners)
         
