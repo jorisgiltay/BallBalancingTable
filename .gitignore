@@ -11,3 +11,4 @@ camera_frames/
 calibration_data/
 debug_frames/
 blue_markers/
+*.mp4

@@ -46,6 +46,11 @@ class BlueMarkerBallDetectionTest:
         self.show_crop_view = False  # Show separate crop window
         self.show_debug_mask = False  # Show HSV mask for debugging
         
+        # Video recording settings
+        self.recording = False
+        self.video_writer = None
+        self.recording_filename = None
+        
         # Load calibration data
         self.load_latest_calibration()
     
@@ -312,10 +317,12 @@ class BlueMarkerBallDetectionTest:
         print("  6. Press 'v' to toggle crop view window")
         print("  7. Press '+'/'-' to adjust crop margin")
         print("  8. Press 'm' to toggle HSV mask debug view")
+        print("  9. Press 'r' to start/stop video recording")
         print(f"\n🔍 Crop mode: {'ENABLED' if self.use_crop else 'DISABLED'}")
         print(f"📏 Crop margin: {self.crop_margin}px")
         print(f"🎯 HSV range: {self.lower_white} to {self.upper_white}")
         print("📝 Note: Image is automatically flipped 180° to match blue marker calibration")
+        print("🎬 Recording: Press 'r' to start/stop MP4 recording")
         print("\nStarting in 3 seconds...")
         time.sleep(3)
         
@@ -484,6 +491,21 @@ class BlueMarkerBallDetectionTest:
                 cv2.putText(display_image, stats_text, (10, display_image.shape[0] - 20), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 
+                # Show recording status
+                if self.recording:
+                    cv2.putText(display_image, "🔴 RECORDING", (display_image.shape[1] - 150, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                # Record frame if recording is enabled
+                if self.recording:
+                    # Initialize video writer if needed
+                    if self.video_writer is None:
+                        self._initialize_video_writer(display_image.shape)
+                    
+                    # Write frame if video writer is ready
+                    if self.video_writer is not None:
+                        self.video_writer.write(display_image)
+                
                 # Show frame
                 cv2.imshow('Ball Detection Test', display_image)
                 
@@ -552,6 +574,8 @@ class BlueMarkerBallDetectionTest:
                         cv2.destroyWindow('HSV Mask - White Detection')
                     print(f"🎭 Debug mask: {'ENABLED' if self.show_debug_mask else 'DISABLED'}")
                     print(f"   HSV range: {self.lower_white} to {self.upper_white}")
+                elif key == ord('r'):
+                    self._toggle_recording()
                 
                 frame_count += 1
         
@@ -560,10 +584,67 @@ class BlueMarkerBallDetectionTest:
         
         finally:
             cv2.destroyAllWindows()
+            # Stop recording if still active
+            if self.recording:
+                self._stop_recording()
             print(f"\n📊 Test Results:")
             print(f"   Frames processed: {frame_count}")
             print(f"   Ball detections: {detection_count}")
             print(f"   Detection rate: {(detection_count/max(frame_count,1))*100:.1f}%")
+    
+    def _toggle_recording(self):
+        """Toggle video recording on/off"""
+        if not self.recording:
+            # Start recording
+            self._start_recording()
+        else:
+            # Stop recording
+            self._stop_recording()
+    
+    def _start_recording(self):
+        """Start video recording"""
+        from datetime import datetime
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.recording_filename = f"ball_detection_{timestamp}.mp4"
+        
+        # We'll initialize the VideoWriter when we get the first frame
+        # For now, just mark that we want to start recording
+        self.recording = True
+        self.video_writer = None
+        print(f"🔴 Recording will start with next frame: {self.recording_filename}")
+    
+    def _initialize_video_writer(self, frame_shape):
+        """Initialize video writer with actual frame dimensions"""
+        if self.video_writer is None and self.recording:
+            height, width = frame_shape[:2]
+            
+            # Initialize VideoWriter
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            self.video_writer = cv2.VideoWriter(
+                self.recording_filename,
+                fourcc,
+                30.0,  # FPS
+                (width, height)
+            )
+            
+            if self.video_writer.isOpened():
+                print(f"🔴 Recording initialized: {self.recording_filename} ({width}x{height})")
+            else:
+                print("❌ Failed to initialize recording")
+                self.video_writer = None
+                self.recording = False
+    
+    def _stop_recording(self):
+        """Stop video recording"""
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
+            print(f"⏹️  Recording stopped: {self.recording_filename}")
+        
+        self.recording = False
+        self.recording_filename = None
     
     def cleanup(self):
         """Clean up resources"""
