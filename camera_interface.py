@@ -22,6 +22,8 @@ import time
 from typing import Tuple, Optional, Dict, Any
 import threading
 import queue
+import os
+import json
 
 # Blue marker detection system - no ArUco needed
 
@@ -382,6 +384,84 @@ class RealSenseCameraInterface:
                             self.position_queue.put_nowait((world_x, world_y, depth_z, time.time()))
                         except queue.Empty:
                             pass
+                   
+
+                    # Load calibration data to get accurate measurements
+                    calib_dir = "calibration_data"
+                    json_files = [f for f in os.listdir(calib_dir) if f.startswith("color_calibration_") and f.endswith(".json")]
+                    
+                    if json_files:
+                        latest_file = sorted(json_files)[-1]
+                        json_path = os.path.join(calib_dir, latest_file)
+                        
+                        with open(json_path, 'r') as f:
+                            calib_data = json.load(f)
+                        
+                        # Simple approach: expand the marker center rectangle outward by 2cm equivalent pixels
+                        # Calculate the center of the marker rectangle
+                        center_x = np.mean(self.table_corners_pixels[:, 0])
+                        center_y = np.mean(self.table_corners_pixels[:, 1])
+                        
+                        # Calculate expansion factor: need to go from 31cm (marker center to center) to 35cm (edge to edge)
+                        # Current marker distance represents 31cm (35cm - 4cm), target is 35cm
+                        expansion_factor = 35.0 / 31.0  # ≈1.129
+                        
+                        # Expand each corner outward from the center
+                        plate_corners_pixel = []
+                        for corner in self.table_corners_pixels:
+                            # Vector from center to corner
+                            dx = corner[0] - center_x
+                            dy = corner[1] - center_y
+                            
+                            # Expand by factor
+                            new_x = center_x + (dx * expansion_factor)
+                            new_y = center_y + (dy * expansion_factor)
+                            
+                            plate_corners_pixel.append([new_x, new_y])
+                        
+                        plate_corners_pixel = np.array(plate_corners_pixel, dtype=np.float32)
+                        
+                        # Draw the expanded plate edge rectangle (green, thick)
+                        corners_rect = np.array([
+                            plate_corners_pixel[0],  # TL (Top-Left plate edge)
+                            plate_corners_pixel[1],  # TR (Top-Right plate edge)  
+                            plate_corners_pixel[3],  # BR (Bottom-Right plate edge)
+                            plate_corners_pixel[2]   # BL (Bottom-Left plate edge)
+                        ])
+                        corners_int = corners_rect.astype(np.int32)
+                        cv2.polylines(color_image, [corners_int], True, (0, 255, 0), 2)
+                        
+                        # Draw marker centers for reference (yellow, thin)
+                        marker_corners_rect = np.array([
+                            self.table_corners_pixels[0],  # TL marker center
+                            self.table_corners_pixels[1],  # TR marker center
+                            self.table_corners_pixels[3],  # BR marker center
+                            self.table_corners_pixels[2]   # BL marker center
+                        ])
+                        marker_corners_int = marker_corners_rect.astype(np.int32)
+                        cv2.polylines(color_image, [marker_corners_int], True, (0, 255, 255), 1)  # Yellow, thin line
+
+                  
+                    
+                    # Draw the ball
+                    if pixel_x is not None and pixel_y is not None:
+                        world_x, world_y = self.pixel_to_world_coordinates(pixel_x, pixel_y)
+                        
+                        # Draw ball position
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 15, (0, 0, 255), 3)
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 5, (255, 255, 255), -1)
+
+                        # Show coordinates
+                        coord_text = f"Pixel: ({pixel_x:.0f}, {pixel_y:.0f})"
+                        world_text = f"World: ({world_x:.3f}, {world_y:.3f})m"
+
+                        cv2.putText(color_image, coord_text, (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        cv2.putText(color_image, world_text, (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        cv2.imshow("Ball Tracking", color_image)
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break  # Optionally allow quitting the feed
                 
                 time.sleep(0.01)  # ~100 Hz capture rate
                 
