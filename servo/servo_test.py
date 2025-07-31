@@ -3,7 +3,7 @@ import time
 
 # ----------- Setup Parameters -----------
 DEVICENAME = 'COM5'           # Your U2D2 COM port
-BAUDRATE = 57600
+BAUDRATE = 1000000
 DXL_IDs = [1, 2]              # Servo IDs
 
 ADDR_TORQUE_ENABLE = 64
@@ -97,7 +97,7 @@ try:
             if positions_reached == len(DXL_IDs):
                 break
 
-            time.sleep(0.02)  # ~50 Hz
+            time.sleep(0.01)  # ~100 Hz
 
         time.sleep(1)
 
