@@ -108,41 +108,48 @@ class BallBalanceComparison:
         
     def reset_ball(self, position=None, randomize=True):
         """Reset ball to initial position"""
+
         if position is None:
             if randomize:
                 # Random position like in RL training - adjusted for 25cm table
                 position = [
-                    np.random.uniform(-0.11, 0.11),  # Stay within 22cm range for safety
+                    np.random.uniform(-0.11, 0.11),
                     np.random.uniform(-0.11, 0.11),
                     0.5
                 ]
                 print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
             else:
-                # Fixed position for consistent testing - well within 25cm table
-                position = [0.06, 0.08, 0.5]  # Distance = 0.10m (safely within 0.125m table)
+                position = [0.06, 0.08, 0.5]
                 print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
-            
+        
+        # 🛡️ Ensure minimum height above the table to avoid bad spawns
+        if position[2] < 0.2:
+            print(f"Ball Z too low ({position[2]:.2f}), adjusting to safe height.")
+            position[2] = 0.5  # safe above-table height
+
         if hasattr(self, 'ball_id'):
             p.removeBody(self.ball_id)
-            
+
         self.ball_id = p.createMultiBody(
-            baseMass=0.0027,  # 2.7 grams in kg
+            baseMass=0.0027,
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
-            baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, 
-                                                   rgbaColor=[0.9, 0.9, 0.9, 1],      # Bright white
-                                                   specularColor=[0.8, 0.8, 0.8]),    # Shiny surface
+            baseVisualShapeIndex=p.createVisualShape(
+                p.GEOM_SPHERE,
+                radius=self.ball_radius,
+                rgbaColor=[0.9, 0.9, 0.9, 1],
+                specularColor=[0.8, 0.8, 0.8]
+            ),
             basePosition=position
         )
-        
-        # Reset PID controllers
+
+        # Reset system
         self.pitch_pid.reset()
         self.roll_pid.reset()
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None  # Reset velocity estimation
+        self.prev_ball_pos = None
         self.step_count = 0
-        
-        # Let ball settle
+
         for _ in range(100):
             p.stepSimulation()
     
@@ -395,11 +402,15 @@ class BallBalanceComparison:
             if physics_step_count % self.physics_steps_per_control == 0:
                 # Get observation (includes position + estimated velocity)
                 observation = self.get_observation()
+
                 ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
-                
+
                 # Get ball height for collision detection
                 ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
                 ball_z = ball_pos[2]
+                
+                if getattr(self, "camera_mode", None) == "hybrid":
+                    p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, ball_z], [0, 0, 0, 1])
                 
                 # Control logic - runs at control frequency
                 control_action = None
@@ -429,12 +440,26 @@ class BallBalanceComparison:
                     self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count)
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
+                # Check if ball fell off - 25cm table (radius = 0.125m)
                 distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                if distance_from_center > 0.125 or ball_z < 0.05:
+                ball_fell = distance_from_center > 0.125 and ball_z < 0.5
+
+                if ball_fell and not self._ball_reset:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")
-                    self.reset_ball(randomize=self.randomize_ball)
+
+                    if getattr(self, "camera_mode", None) == "hybrid":
+                        print("Press R to reset the ball")
+                    else:
+                        self.reset_ball(randomize=self.randomize_ball)
+                        
+                    self._ball_reset = True  # Prevent further resets
                     physics_step_count = 0  # Reset physics step counter
                     continue
+
+                # If ball is back on the table (indicating it's been successfully reset or placed)
+                elif not ball_fell:
+                    self._ball_reset = False  # Allow future resets
+
                 
                 # Print status occasionally (reduced frequency when visuals are enabled)
                 print_freq = self.control_freq * 10 if self.enable_visuals else self.control_freq

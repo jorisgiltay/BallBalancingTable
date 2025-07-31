@@ -6,3 +6,9 @@ tensorboard_logs/
 models/
 checkpoints/
 good_models/
+camera_test_frames/
+camera_frames/
+calibration_data/
+debug_frames/
+blue_markers/
+*.mp4
