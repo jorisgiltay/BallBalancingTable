@@ -8,3 +8,4 @@ matplotlib==3.7.1
 opencv-python==4.8.1.78
 pyrealsense2==2.55.1.6486
 reportlab==4.0.4
+dynamixel-sdk==3.7.31
