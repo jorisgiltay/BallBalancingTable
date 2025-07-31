@@ -46,17 +46,25 @@ class BallDetector:
         self.max_contour_area = 8000     # Larger maximum area
         self.circularity_threshold = 0.6  # More lenient circularity
         
-    def detect_ball(self, color_frame: np.ndarray, depth_frame: Optional[np.ndarray] = None) -> Optional[Tuple[float, float, float]]:
+    def detect_ball(self, color_frame: np.ndarray, depth_frame: Optional[np.ndarray] = None, crop: Optional[Tuple[int, int, int, int]] = None) -> Optional[Tuple[float, float, float]]:
         """
-        Detect ball position in the given frame
+        Detect ball position in the given frame, with optional cropping (ROI)
         
         Args:
             color_frame: RGB color image from camera
             depth_frame: Optional depth image for Z coordinate
-            
+            crop: Optional (x, y, w, h) tuple to crop the input frames before detection
         Returns:
-            Tuple of (x, y, z) in pixels, or None if no ball detected
+            Tuple of (x, y, z) in pixels (relative to full image), or None if no ball detected
         """
+        # Apply crop if specified
+        x0, y0 = 0, 0
+        if crop is not None:
+            x0, y0, w, h = crop
+            color_frame = color_frame[y0:y0+h, x0:x0+w]
+            if depth_frame is not None:
+                depth_frame = depth_frame[y0:y0+h, x0:x0+w]
+
         # Convert BGR to HSV for better color filtering
         hsv = cv2.cvtColor(color_frame, cv2.COLOR_BGR2HSV)
         
@@ -96,15 +104,13 @@ class BallDetector:
         M = cv2.moments(best_contour)
         if M["m00"] == 0:
             return None
-            
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
+        cx = float(M["m10"] / M["m00"]) + x0
+        cy = float(M["m01"] / M["m00"]) + y0
         
         # Get depth if available
         z = 0.0
-        if depth_frame is not None and 0 <= cx < depth_frame.shape[1] and 0 <= cy < depth_frame.shape[0]:
-            z = depth_frame[cy, cx]
-            
+        if depth_frame is not None and 0 <= cx-x0 < depth_frame.shape[1] and 0 <= cy-y0 < depth_frame.shape[0]:
+            z = depth_frame[int(cy-y0), int(cx-x0)]
         return (cx, cy, z)
 
 
@@ -275,28 +281,39 @@ class RealSenseCameraInterface:
         Returns:
             Tuple of (x, y) in meters relative to table center
         """
-        if self.table_corners_pixels is None:
-            print("❌ Table not calibrated - using approximate conversion")
+        # Check for valid pixel coordinates
+        if not (np.isfinite(pixel_x) and np.isfinite(pixel_y)):
+            print(f"❌ Invalid pixel coordinates: ({pixel_x}, {pixel_y})")
+            return 0.0, 0.0
+
+        # Robust check for calibration data
+        if (
+            self.table_corners_pixels is None or
+            not isinstance(self.table_corners_pixels, np.ndarray) or
+            self.table_corners_pixels.shape != (4, 2) or
+            self.table_corners_pixels.dtype != np.float32
+        ):
+            print(f"❌ Table not calibrated or invalid shape: {self.table_corners_pixels}")
             # Fallback: simple linear mapping (not accurate)
-            # Assuming 640x480 resolution and table roughly in center
             world_x = (pixel_x - 320) / 320 * (self.table_size / 2)
             world_y = (pixel_y - 240) / 240 * (self.table_size / 2)
             return world_x, world_y
-        
+
         # Use perspective transformation
         try:
-            # Create perspective transformation matrix
             pixel_point = np.array([[pixel_x, pixel_y]], dtype=np.float32)
-            
-            # Get transformation matrix
-            M = cv2.getPerspectiveTransform(self.table_corners_pixels, 
-                                          self.table_corners_world[:, :2])
-            
-            # Transform point
+            # Force both arrays to be contiguous np.float32
+            table_corners_pixels = np.ascontiguousarray(self.table_corners_pixels, dtype=np.float32)
+            world_corners = np.ascontiguousarray(self.table_corners_world[:, :2], dtype=np.float32)
+            if table_corners_pixels.shape != (4, 2):
+                print(f"❌ Invalid table_corners_pixels shape: {table_corners_pixels.shape}")
+                return 0.0, 0.0
+            if world_corners.shape != (4, 2):
+                print(f"❌ Invalid world corners shape: {world_corners.shape}")
+                return 0.0, 0.0
+            M = cv2.getPerspectiveTransform(table_corners_pixels, world_corners)
             world_point = cv2.perspectiveTransform(pixel_point.reshape(1, 1, 2), M)
-            
             return float(world_point[0, 0, 0]), float(world_point[0, 0, 1])
-            
         except Exception as e:
             print(f"❌ Coordinate transformation error: {e}")
             return 0.0, 0.0
@@ -349,14 +366,12 @@ class RealSenseCameraInterface:
                 
                 if ball_position:
                     pixel_x, pixel_y, depth_z = ball_position
-                    
                     # Convert to world coordinates
                     world_x, world_y = self.pixel_to_world_coordinates(pixel_x, pixel_y)
-                    
+                    #print(f"Ball position in world coordinates: x={world_x:.4f}, y={world_y:.4f}, z={depth_z:.4f}")
                     # Update latest position
                     with self.position_lock:
                         self.latest_position = (world_x, world_y, depth_z)
-                    
                     # Add to queue (non-blocking)
                     try:
                         self.position_queue.put_nowait((world_x, world_y, depth_z, time.time()))

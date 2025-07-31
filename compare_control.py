@@ -395,11 +395,15 @@ class BallBalanceComparison:
             if physics_step_count % self.physics_steps_per_control == 0:
                 # Get observation (includes position + estimated velocity)
                 observation = self.get_observation()
+
                 ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
-                
+  
+                #p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, 1], [0, 0, 0, 1])
+
                 # Get ball height for collision detection
                 ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
                 ball_z = ball_pos[2]
+                p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, ball_z], [0, 0, 0, 1])
                 
                 # Control logic - runs at control frequency
                 control_action = None
