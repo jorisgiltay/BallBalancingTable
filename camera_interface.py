@@ -459,9 +459,9 @@ class RealSenseCameraInterface:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         cv2.putText(color_image, world_text, (10, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                        cv2.imshow("Ball Tracking", color_image)
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break  # Optionally allow quitting the feed
+                    cv2.imshow("Ball Tracking", color_image)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break  # Optionally allow quitting the feed
                 
                 time.sleep(0.01)  # ~100 Hz capture rate
                 
