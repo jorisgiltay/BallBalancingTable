@@ -8,16 +8,34 @@ import os
 import threading
 import queue
 
+# Optional servo control
+try:
+    from servo_controller import ServoController
+    SERVO_AVAILABLE = True
+except ImportError:
+    SERVO_AVAILABLE = False
+    print("⚠️ Servo controller not available (missing dynamixel_sdk or servo_controller.py)")
+
+# Optional camera integration
+try:
+    from camera_interface import CameraSimulationInterface
+    CAMERA_AVAILABLE = True
+except ImportError:
+    CAMERA_AVAILABLE = False
+    print("⚠️ Camera interface not available (missing camera_interface.py or dependencies)")
+
 
 class BallBalanceComparison:
     """
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation"):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
         self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
+        self.enable_servos = enable_servos  # Flag to enable/disable servo control
+        self.camera_mode = camera_mode  # Camera mode: "simulation", "hybrid", or "real"
         
         # Timing parameters
         self.physics_freq = 240  # Hz - physics simulation frequency
@@ -28,6 +46,34 @@ class BallBalanceComparison:
         # PID controllers (create these BEFORE setup_simulation)
         self.pitch_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
         self.roll_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
+        
+        # Servo controller
+        self.servo_controller = None
+        if self.enable_servos and SERVO_AVAILABLE:
+            self.servo_controller = ServoController()
+            if self.servo_controller.connect():
+                print("✅ Servo control enabled")
+            else:
+                print("❌ Failed to connect to servos, continuing without servo control")
+                self.servo_controller = None
+        elif self.enable_servos:
+            print("❌ Servo control requested but not available")
+        
+        # Camera interface
+        self.camera_interface = None
+        use_camera = camera_mode in ["hybrid", "real"] and CAMERA_AVAILABLE
+        if use_camera:
+            self.camera_interface = CameraSimulationInterface(use_camera=True, table_size=0.25)
+            print(f"✅ Camera mode: {camera_mode}")
+            print("📷 Camera interface initialized")
+            if camera_mode == "real":
+                print("⚠️ Real camera mode - make sure PyBullet simulation represents actual table")
+        elif camera_mode != "simulation":
+            print(f"❌ Camera mode '{camera_mode}' requested but camera interface not available")
+            self.camera_mode = "simulation"
+        
+        # Initialize ball reset tracking
+        self._ball_reset = False
         
         # Thread-safe visual system with optimized queue
         if self.enable_visuals:
@@ -41,6 +87,11 @@ class BallBalanceComparison:
         if self.enable_visuals:
             self.visual_thread.start()
         
+        # Start camera tracking if using camera
+        if self.camera_mode in ["hybrid", "real"] and self.camera_interface:
+            self.camera_interface.start_tracking()
+            print("📷 Camera tracking started")
+        
         # RL model (will be loaded if using RL)
         self.rl_model = None
         if control_method == "rl":
@@ -52,9 +103,160 @@ class BallBalanceComparison:
         self.prev_ball_pos = None  # For velocity estimation  
         self.step_count = 0
         self.randomize_ball = True  # Start with randomized positions
+    
+    def calibrate_camera(self):
+        """Calibrate camera for table detection"""
+        if self.camera_mode == "simulation":
+            print("ℹ️ Camera calibration not needed in simulation mode")
+            return True
+        
+        print("🎯 Starting camera calibration...")
+        print("📋 Options:")
+        print("   1. Interactive calibration (recommended)")
+        print("   2. Run external script (may have Unicode issues)")
+        print("   3. Skip calibration (use existing data)")
+        
+        choice = input("\nChoose option (1-3): ").strip()
+        
+        if choice == "3":
+            print("ℹ️ Skipping calibration, using existing calibration data")
+            if self.camera_interface:
+                success = self.camera_interface.load_existing_calibration()
+                return success
+            return False
+        elif choice == "2":
+            return self._run_external_calibration()
+        else:  # Default to option 1
+            return self._run_interactive_calibration()
+    
+    def _run_external_calibration(self):
+        """Run the external calibration script"""
+        print("📋 Running external camera_calibration_color.py script...")
+        print("   Make sure:")
+        print("   - RealSense camera is connected")
+        print("   - 35x35cm base plate with 4 blue markers is visible")
+        print("   - Table is well-lit and no ball is present")
+        
+        import subprocess
+        import sys
+        
+        try:
+            # Set environment to handle Unicode properly
+            env = os.environ.copy()
+            env['PYTHONIOENCODING'] = 'utf-8'
+            
+            # Run the camera calibration script with proper encoding
+            result = subprocess.run([sys.executable, "camera_calibration_color.py"], 
+                                  capture_output=True, text=True, timeout=300,
+                                  env=env, encoding='utf-8', errors='replace')
+            
+            if result.returncode == 0:
+                print("✅ Camera calibration completed successfully")
+                print("📁 Calibration data saved to calibration_data/ folder")
+                
+                # Reload calibration data in the camera interface
+                if self.camera_interface:
+                    success = self.camera_interface.load_existing_calibration()
+                    if success:
+                        print("✅ Calibration data loaded into camera interface")
+                        return True
+                    else:
+                        print("⚠️ Calibration completed but failed to load into camera interface")
+                        return False
+                return True
+            else:
+                print("❌ Camera calibration failed")
+                if result.stderr:
+                    print(f"Error output: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("❌ Camera calibration timed out (5 minutes)")
+            return False
+        except FileNotFoundError:
+            print("❌ camera_calibration_color.py script not found")
+            print("   Make sure you're running from the project root directory")
+            return False
+        except Exception as e:
+            print(f"❌ Error running calibration: {e}")
+            return False
+    
+    def _run_interactive_calibration(self):
+        """Run a simplified interactive calibration"""
+        print("🎯 Interactive Camera Calibration")
+        print("=" * 40)
+        print("This will guide you through calibrating the camera manually.")
+        print("")
+        print("Setup requirements:")
+        print("- 35x35cm wooden base plate")
+        print("- 4 blue markers (4x4cm) at the corners") 
+        print("- RealSense camera positioned above")
+        print("- Good lighting, no ball on table")
+        print("")
+        
+        # Ask user if they want to proceed
+        proceed = input("Ready to start calibration? (y/n): ").strip().lower()
+        if proceed != 'y':
+            print("❌ Calibration cancelled")
+            return False
+        
+        try:
+            # Import and run the calibration directly 
+            import sys
+            sys.path.append('.')
+            
+            # Try to import the calibration module
+            try:
+                from camera_calibration_color import ColorCalibrationTest
+            except ImportError as e:
+                print(f"❌ Could not import calibration module: {e}")
+                return False
+            
+            # Create and run calibration
+            calibrator = ColorCalibrationTest()
+            
+            if not calibrator.initialize_camera():
+                print("❌ Failed to initialize camera for calibration")
+                return False
+            
+            print("📸 Taking 10 calibration samples...")
+            print("Keep the setup steady during calibration...")
+            
+            success = calibrator.run_calibration(num_samples=10)
+            calibrator.cleanup()
+            
+            if success:
+                print("✅ Interactive calibration completed successfully!")
+                
+                # Reload calibration data
+                if self.camera_interface:
+                    reload_success = self.camera_interface.load_existing_calibration()
+                    if reload_success:
+                        print("✅ New calibration data loaded")
+                        return True
+                    else:
+                        print("⚠️ Calibration saved but failed to reload")
+                        return False
+                return True
+            else:
+                print("❌ Interactive calibration failed")
+                return False
+                
+        except KeyboardInterrupt:
+            print("\n🛑 Calibration cancelled by user")
+            return False
+        except Exception as e:
+            print(f"❌ Error during interactive calibration: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
         
     def setup_simulation(self):
-        """Initialize PyBullet simulation"""
+        """Initialize PyBullet simulation - modified for camera modes"""
+        if self.camera_mode == "real":
+            # In real camera mode, don't create PyBullet simulation
+            print("ℹ️ Real camera mode - skipping PyBullet simulation setup")
+            return
         p.connect(p.GUI)
         
         # Clean, professional camera setup
@@ -106,8 +308,15 @@ class BallBalanceComparison:
         self.ball_radius = 0.02
         self.reset_ball()
         
+        if self.camera_mode == "hybrid":
+            print("🔗 Hybrid mode - camera input with simulated physics")
+        
     def reset_ball(self, position=None, randomize=True):
-        """Reset ball to initial position"""
+        """Reset ball to initial position - modified for camera modes"""
+        if self.camera_mode == "real":
+            print("ℹ️ Real camera mode - please manually position the ball on the table")
+            input("   Press Enter when ball is positioned...")
+            return
 
         if position is None:
             if randomize:
@@ -340,6 +549,28 @@ class BallBalanceComparison:
             self.control_method = "pid"
     
     def get_observation(self):
+        """Get current state observation - now with camera support"""
+        if self.camera_mode == "simulation":
+            # Use original simulation-based observation
+            return self._get_simulation_observation()
+        
+        # Get ball state from camera interface
+        ball_x, ball_y, ball_vx, ball_vy = self.camera_interface.get_ball_state(
+            simulation_ball_id=self.ball_id if hasattr(self, 'ball_id') else None,
+            pybullet_module=p if self.camera_mode == "hybrid" else None
+        )
+        
+        # Update previous position for next velocity calculation (maintain compatibility)
+        self.prev_ball_pos = [ball_x, ball_y]
+        
+        # Return observation in same format as original
+        observation = np.array([
+            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
+        ], dtype=np.float32)
+        
+        return observation
+    
+    def _get_simulation_observation(self):
         """Get current state observation for RL - with estimated velocity using proper control timestep"""
         # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
@@ -410,6 +641,7 @@ class BallBalanceComparison:
                 ball_z = ball_pos[2]
                 
                 if getattr(self, "camera_mode", None) == "hybrid":
+                    # In hybrid mode, update simulation ball position to match camera
                     p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, ball_z], [0, 0, 0, 1])
                 
                 # Control logic - runs at control frequency
@@ -433,6 +665,10 @@ class BallBalanceComparison:
                 # Update table orientation
                 quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
                 p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
+                
+                # Send angles to servo controller if enabled
+                if self.servo_controller:
+                    self.servo_controller.set_table_angles(self.table_pitch, self.table_roll)
                 
                 # Update visual data (thread-safe) - every 10 steps for smoother updates
                 if self.step_count % 10 == 0:
@@ -508,6 +744,11 @@ class BallBalanceComparison:
                         print("Quitting...")
                         if self.enable_visuals:
                             self.visual_thread_running = False
+                        if self.servo_controller:
+                            self.servo_controller.disconnect()
+                        if self.camera_interface:
+                            self.camera_interface.stop_tracking()
+                            self.camera_interface.cleanup()
                         return
             
             # Always step physics at physics frequency
@@ -524,15 +765,53 @@ def main():
                        help="Control frequency in Hz (default: 50)")
     parser.add_argument("--visuals", action="store_true",
                        help="Enable visual dashboard in console (thread-safe)")
+    parser.add_argument("--servos", action="store_true",
+                       help="Enable servo control for real hardware")
+    parser.add_argument("--camera", choices=["simulation", "hybrid", "real"], default="simulation",
+                       help="Camera mode: simulation (no camera), hybrid (camera + physics), real (camera only)")
+    parser.add_argument("--calibrate", action="store_true",
+                       help="Perform camera calibration before starting")
     
     args = parser.parse_args()
     
-    simulator = BallBalanceComparison(control_method=args.control, control_freq=args.freq, enable_visuals=args.visuals)
+    simulator = BallBalanceComparison(
+        control_method=args.control, 
+        control_freq=args.freq, 
+        enable_visuals=args.visuals,
+        enable_servos=args.servos,
+        camera_mode=args.camera
+    )
     
     try:
+        # Calibration step
+        if args.calibrate:
+            if not simulator.calibrate_camera():
+                print("❌ Calibration failed, exiting")
+                return
+        
+        # Additional instructions for camera modes
+        if args.camera == "real":
+            print("\n📋 Real Camera Mode Instructions:")
+            print("   1. Ensure RealSense camera is connected and positioned above table")
+            print("   2. Table should be well-lit with good contrast")
+            print("   3. Use white ping pong ball for best detection")
+            print("   4. Control outputs will be connected to servos" + (" (enabled)" if args.servos else " (disabled)"))
+            input("\n   Press Enter to continue...")
+        elif args.camera == "hybrid":
+            print("\n📋 Hybrid Mode Instructions:")
+            print("   1. RealSense camera provides ball position")
+            print("   2. PyBullet simulates physics and visualizes control")
+            print("   3. Great for testing camera integration before hardware deployment")
+            print("   4. Servo control" + (" enabled" if args.servos else " disabled"))
+            input("\n   Press Enter to continue...")
+        
         simulator.run_simulation()
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         p.disconnect()
 
