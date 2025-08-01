@@ -87,10 +87,11 @@ cd build
 
 cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_PYTHON_BINDINGS=bool:true \
+    -DBUILD_PYTHON_BINDINGS=ON \
     -DPYTHON_EXECUTABLE=$(which python3) \
-    -DBUILD_EXAMPLES=bool:false \
-    -DBUILD_GRAPHICAL_EXAMPLES=bool:false
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_GRAPHICAL_EXAMPLES=OFF \
+    -DPYTHON_INSTALL_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")
 
 # Build
 echo "Step 5: Building librealsense..."
@@ -108,13 +109,10 @@ sudo ldconfig
 
 # Install Python bindings
 echo "Step 7: Installing Python bindings..."
-cd ../wrappers/python
-
-# Build Python bindings with proper library paths
 export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-python3 setup.py build_ext --inplace
-python3 setup.py build
-pip install .
+
+# Python bindings should be built as part of make install
+echo "Python bindings built with main library - testing import..."
 
 # Test installation
 echo "Step 8: Testing installation..."
