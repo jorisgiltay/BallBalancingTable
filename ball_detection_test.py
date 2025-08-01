@@ -32,12 +32,13 @@ class BlueMarkerBallDetectionTest:
         # Base plate and table dimensions  
         self.base_plate_size = 0.35  # 35cm x 35cm base plate
         self.table_size = 0.25       # 25cm x 25cm tilting table
+        self.platform_height = 0.115 # 11.5cm platform height increase
         
-        # Ball detector settings - More flexible for stationary detection
+        # Ball detector settings - Adjusted for ball on platform (higher/closer to camera)
         self.lower_white = np.array([0, 0, 180])    # Lower brightness threshold
         self.upper_white = np.array([180, 50, 255]) # Higher saturation tolerance
-        self.min_contour_area = 50                  # Smaller minimum area
-        self.max_contour_area = 8000               # Larger maximum area
+        self.min_contour_area = 100                 # Slightly higher minimum area
+        self.max_contour_area = 15000              # Much larger maximum area for closer ball
         self.circularity_threshold = 0.6           # More lenient circularity
         
         # Zoom/crop settings
@@ -270,18 +271,15 @@ class BlueMarkerBallDetectionTest:
                 # Fallback to default
                 base_plate_size = 0.35
             
-            # Define world coordinates for actual base plate (35cm x 35cm)
-            # Blue markers are 4x4cm squares placed at corners, so marker centers are 2cm inward from plate edges
-            # Actual corners: ±17.5cm, marker centers: ±15.5cm from center
-            marker_offset = 0.02  # 2cm offset from plate edge to marker center
-            plate_edge = base_plate_size / 2  # 17.5cm from center to plate edge
-            marker_center_distance = plate_edge - marker_offset  # 15.5cm from center to marker center
+            # Define world coordinates for the actual 25cm table (not the markers)
+            # We want ball coordinates relative to the table, not the marker positions
+            table_half_size = self.table_size / 2  # 12.5cm for 25cm table
             
             table_corners_world = np.array([
-                [-marker_center_distance, -marker_center_distance],   # Top-left marker center: (-15.5cm, -15.5cm)
-                [marker_center_distance, -marker_center_distance],    # Top-right marker center: (+15.5cm, -15.5cm)
-                [-marker_center_distance, marker_center_distance],    # Bottom-left marker center: (-15.5cm, +15.5cm)
-                [marker_center_distance, marker_center_distance]      # Bottom-right marker center: (+15.5cm, +15.5cm)
+                [-table_half_size, -table_half_size],   # Top-left table corner: (-12.5cm, -12.5cm)
+                [table_half_size, -table_half_size],    # Top-right table corner: (+12.5cm, -12.5cm)
+                [-table_half_size, table_half_size],    # Bottom-left table corner: (-12.5cm, +12.5cm)
+                [table_half_size, table_half_size]      # Bottom-right table corner: (+12.5cm, +12.5cm)
             ], dtype=np.float32)
             
             # Create perspective transformation matrix
@@ -290,7 +288,16 @@ class BlueMarkerBallDetectionTest:
             M = cv2.getPerspectiveTransform(self.table_corners_pixels, table_corners_world)
             world_point = cv2.perspectiveTransform(pixel_point.reshape(1, 1, 2), M)
             
-            return float(world_point[0, 0, 0]), float(world_point[0, 0, 1])
+            world_x = float(world_point[0, 0, 0])
+            world_y = float(world_point[0, 0, 1])
+            
+            # Empirically determined correction factor - accounts for all real-world factors
+            # including lens distortion, marker placement errors, and height effects
+            COORDINATE_CORRECTION = 0.9  # Tuned to match actual table dimensions
+            world_x *= COORDINATE_CORRECTION
+            world_y *= COORDINATE_CORRECTION
+            
+            return world_x, world_y
             
         except Exception as e:
             print(f"⚠️ Coordinate transformation error: {e}")
@@ -456,9 +463,9 @@ class BlueMarkerBallDetectionTest:
                     
                     detection_count += 1
                     
-                    # Draw ball position
-                    cv2.circle(display_image, (int(pixel_x), int(pixel_y)), 15, (0, 0, 255), 3)
-                    cv2.circle(display_image, (int(pixel_x), int(pixel_y)), 5, (255, 255, 255), -1)
+                    # Draw ball position - adjusted for platform height
+                    cv2.circle(display_image, (int(pixel_x), int(pixel_y)), 25, (0, 0, 255), 3)  # Larger outer circle
+                    cv2.circle(display_image, (int(pixel_x), int(pixel_y)), 8, (255, 255, 255), -1)  # Larger center dot
                     
                     # Show coordinates
                     coord_text = f"Pixel: ({pixel_x:.0f}, {pixel_y:.0f})"
@@ -522,13 +529,13 @@ class BlueMarkerBallDetectionTest:
                             
                             # Draw detection info on crop view
                             if ball_pos:
-                                # Scale ball position to crop coordinates
+                                # Scale ball position to crop coordinates - adjusted for platform height
                                 crop_ball_x = (pixel_x - crop_offset[0]) * scale_factor
                                 crop_ball_y = (pixel_y - crop_offset[1]) * scale_factor
                                 cv2.circle(scaled_crop, (int(crop_ball_x), int(crop_ball_y)), 
-                                         max(5, int(15 * scale_factor)), (0, 0, 255), 2)
+                                         max(8, int(25 * scale_factor)), (0, 0, 255), 2)  # Larger outer circle
                                 cv2.circle(scaled_crop, (int(crop_ball_x), int(crop_ball_y)), 
-                                         max(2, int(5 * scale_factor)), (255, 255, 255), -1)
+                                         max(3, int(8 * scale_factor)), (255, 255, 255), -1)  # Larger center dot
                             
                             cv2.imshow('Cropped View - What Algorithm Sees', scaled_crop)
                 

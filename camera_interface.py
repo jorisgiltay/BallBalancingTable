@@ -43,9 +43,9 @@ class BallDetector:
         # self.lower_orange = np.array([10, 100, 100])
         # self.upper_orange = np.array([25, 255, 255])
         
-        # Contour filtering parameters - More flexible for better detection
-        self.min_contour_area = 50       # Smaller minimum area
-        self.max_contour_area = 8000     # Larger maximum area
+        # Contour filtering parameters - Adjusted for ball on platform (higher/closer to camera)
+        self.min_contour_area = 100      # Slightly higher minimum area
+        self.max_contour_area = 15000    # Much larger maximum area for closer ball
         self.circularity_threshold = 0.6  # More lenient circularity
         
     def detect_ball(self, color_frame: np.ndarray, depth_frame: Optional[np.ndarray] = None, crop: Optional[Tuple[int, int, int, int]] = None) -> Optional[Tuple[float, float, float]]:
@@ -131,6 +131,8 @@ class RealSenseCameraInterface:
         """
         self.table_size = table_size
         self.camera_height = camera_height
+        self.platform_height = 0.115  # 11.5cm platform height increase
+        self.current_camera_height = 0.36  # 36cm measured distance above platform
         
         # Camera calibration parameters (to be determined during calibration)
         self.camera_matrix = None
@@ -253,11 +255,14 @@ class RealSenseCameraInterface:
                 marker_offset = marker_size / 2  # 2cm offset from plate edge to marker center
                 marker_center_distance = (base_plate_size / 2) - marker_offset  # Distance from center to marker center
                 
+                # We want to map to the actual table coordinates (25cm), not the marker coordinates (31cm)
+                table_half_size = self.table_size / 2  # 12.5cm for 25cm table
+                
                 self.table_corners_world = np.array([
-                    [-marker_center_distance, -marker_center_distance, 0],  # Top-left marker center
-                    [marker_center_distance, -marker_center_distance, 0],   # Top-right marker center
-                    [-marker_center_distance, marker_center_distance, 0],   # Bottom-left marker center
-                    [marker_center_distance, marker_center_distance, 0]     # Bottom-right marker center
+                    [-table_half_size, -table_half_size, 0],  # Top-left table corner
+                    [table_half_size, -table_half_size, 0],   # Top-right table corner
+                    [-table_half_size, table_half_size, 0],   # Bottom-left table corner
+                    [table_half_size, table_half_size, 0]     # Bottom-right table corner
                 ], dtype=np.float32)
                 
                 print(f"✅ Loaded blue marker calibration from: {latest_file}")
@@ -315,7 +320,17 @@ class RealSenseCameraInterface:
                 return 0.0, 0.0
             M = cv2.getPerspectiveTransform(table_corners_pixels, world_corners)
             world_point = cv2.perspectiveTransform(pixel_point.reshape(1, 1, 2), M)
-            return float(world_point[0, 0, 0]), float(world_point[0, 0, 1])
+            
+            world_x = float(world_point[0, 0, 0])
+            world_y = float(world_point[0, 0, 1])
+            
+            # Empirically determined correction factor - accounts for all real-world factors
+            # including lens distortion, marker placement errors, and height effects
+            COORDINATE_CORRECTION = 0.9  # Tuned to match actual table dimensions
+            world_x *= COORDINATE_CORRECTION
+            world_y *= COORDINATE_CORRECTION
+            
+            return world_x, world_y
         except Exception as e:
             print(f"❌ Coordinate transformation error: {e}")
             return 0.0, 0.0
@@ -443,9 +458,9 @@ class RealSenseCameraInterface:
                     if pixel_x is not None and pixel_y is not None:
                         world_x, world_y = self.pixel_to_world_coordinates(pixel_x, pixel_y)
                         
-                        # Draw ball position
-                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 15, (0, 0, 255), 3)
-                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 5, (255, 255, 255), -1)
+                        # Draw ball position - adjusted for platform height
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 25, (0, 0, 255), 3)  # Larger outer circle
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 8, (255, 255, 255), -1)  # Larger center dot
 
                         # Show coordinates
                         coord_text = f"Pixel: ({pixel_x:.0f}, {pixel_y:.0f})"
