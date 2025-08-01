@@ -1,113 +1,156 @@
 # Ball Balancing Table
 
-A comprehensive physics simulation of a ball balancing on a pivoting table, featuring both PID control and Reinforcement Learning approaches with real-time visual monitoring.
+A complete ball balancing control system with **simulation**, **camera integration**, and **hardware control**. Features PID and Reinforcement Learning controllers with real-time visual monitoring and servo control for physical deployment.
 
 ![PyBullet Simulation](media/sim.png)
 
 ## 🎯 Features
 
-### Control Systems
-- **🎛️ PID Control**: Traditional control system with tuned parameters for reliable performance
-- **🤖 Reinforcement Learning**: PPO agent trained with advanced reward engineering
-- **⚡ Real-time Comparison**: Switch between control methods during simulation
-- **🔧 Live Tuning**: Adjust control parameters on-the-fly
+### Unified Control System
+- **🎛️ PID Control**: Traditional control with tuned parameters
+- **🤖 Reinforcement Learning**: PPO agent with advanced reward engineering  
+- **📷 Camera Integration**: RealSense camera for real-world ball tracking
+- **🦾 Servo Control**: Dynamixel servo integration for hardware deployment
+- **⚡ Real-time Switching**: Change control methods during operation
+
+### Operating Modes
+- **🖥️ Pure Simulation**: PyBullet physics simulation only
+- **🔗 Hybrid Mode**: Camera input + simulated physics for testing
+- **🏗️ Hardware Mode**: Full camera + servo deployment
+
+![Hybrid Mode Demo](media/hybrid_mode.gif)
 
 ### Visual Dashboard
-- **📊 Matplotlib Dashboard**: Real-time performance monitoring in separate window
+- **📊 Real-time Monitoring**: Live ball position, control actions, and performance metrics
 - **🎨 Professional Interface**: Clean, dark-themed dashboard with color-coded status
-- **📈 Live Metrics**: Ball position, velocity, control actions, and table angles
-- **🎯 Visual Feedback**: Color-coded performance indicators and trend monitoring
+- **📈 Performance Analysis**: Distance tracking, velocity monitoring, and control efficiency
 
 ![PID Control Dashboard](media/matplotlib_PID.png)
 ![RL Control Dashboard](media/matplotlib_RL.png)
 
-### Advanced Environment
-- **🎯 Realistic Physics**: 25cm×25cm table with 2.7g ping pong ball (real-world dimensions)
-- **⚙️ Professional Timing**: 240Hz physics, 50Hz control frequency (servo-realistic)
-- **🎨 Clean Visuals**: Gray ground plane, dark metallic table, bright white ball
-- **🔄 Thread-safe Architecture**: Non-blocking visual system with queue-based communication
-
 ## 🚀 Quick Start
 
-### 1. Setup Environment
+### 1. Installation
 ```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup project
 python setup.py
 ```
 
-### 2. Test PID Control with Visual Dashboard
+### 2. Basic Simulation
 ```bash
+# Pure simulation with PID control
 python compare_control.py --control pid --visuals
-```
 
-### 3. Train RL Agent (with improved reward function)
-```bash
-python train_rl.py --mode train --freq 50
-```
-
-### 4. Test RL Agent with Dashboard
-```bash
+# Test RL control (if model available)
 python compare_control.py --control rl --visuals
 ```
 
-### 5. Compare Both Methods
+### 3. Camera Integration
 ```bash
-python compare_control.py --control pid --freq 50 --visuals
+# Calibrate camera first (requires RealSense + blue markers)
+python compare_control.py --camera hybrid --calibrate
+
+# Run hybrid mode with camera input
+python compare_control.py --camera hybrid --visuals
 ```
-Then press `l` to switch to RL control in real-time!
+
+### 4. Hardware Deployment
+```bash
+# Full hardware mode with servos
+python compare_control.py --camera real --servos --calibrate
+```
 
 ## 🎮 Interactive Controls
 
-During simulation, use these keyboard shortcuts:
+**Keyboard shortcuts during operation:**
 - `r` - Reset ball position
-- `f` - Toggle fixed/random ball starting positions
+- `f` - Toggle fixed/random ball positions  
 - `p` - Switch to PID control
-- `l` - Switch to RL control (if model available)
-- `q` - Quit simulation
+- `l` - Switch to RL control
+- `q` - Quit
+
+## ⚙️ Configuration Options
+
+### Camera Modes
+- `--camera simulation` - Pure PyBullet simulation (default)
+- `--camera hybrid` - Camera input + simulated physics  
+- `--camera real` - Camera only for hardware deployment
+
+### Control Options
+- `--control pid` - Start with PID controller (default)
+- `--control rl` - Start with RL controller
+- `--freq 50` - Control frequency in Hz (default: 50)
+
+### Hardware Integration
+- `--servos` - Enable Dynamixel servo control
+- `--calibrate` - Run camera calibration before starting
+- `--visuals` - Enable real-time dashboard
+
+### Example Commands
+```bash
+# Development: Hybrid mode with visuals
+python compare_control.py --camera hybrid --visuals --servos
+
+# Hardware: Full deployment
+python compare_control.py --camera real --servos --calibrate
+
+# Simulation: Performance testing  
+python compare_control.py --control rl --freq 100 --visuals
+```
+
+## 🔧 Hardware Setup
+
+### Camera System
+- **Intel RealSense D435i** (or compatible)
+- **35×35cm wooden base plate** with 4 blue corner markers
+- **Camera positioned above table** for full table view
+
+### Servo System  
+- **2× Dynamixel servos** (XM430-W350 or similar)
+- **USB interface** (U2D2 or compatible)
+- **Kinematic model**: Half servo range = 3° table movement
+
+### Calibration Requirements
+- 4× **4cm blue markers** at base plate corners
+- **Good lighting** for consistent marker detection
+- **No ball on table** during calibration
 
 ## 📁 Project Structure
 
 ```
-├── simulation.py          # Original PID-only simulation
-├── pid_controller.py      # Tuned PID controller implementation
-├── ball_balance_env.py    # Advanced Gymnasium environment for RL
-├── train_rl.py           # RL training with improved reward engineering
-├── compare_control.py    # Interactive comparison tool with visual dashboard
-├── debug_rl.py           # RL debugging and analysis tools
-├── recovery_tool.py      # Model recovery and checkpoint management
-├── setup.py              # Setup and installation script
-├── requirements.txt      # Python dependencies
-├── media/                # Screenshots and documentation images
-├── models/               # Trained RL models
-├── good_models/          # Backup of best performing models
-├── checkpoints/          # Training checkpoints every 10k steps
-└── tensorboard_logs/     # Detailed training logs
+├── compare_control.py         # 🎯 Main unified control system
+├── servo_controller.py        # 🦾 Servo control with kinematics  
+├── camera_interface.py        # 📷 Camera integration & ball detection
+├── camera_calibration_color.py # 🎯 Camera calibration tool
+├── pid_controller.py          # 🎛️ PID controller implementation
+├── ball_balance_env.py        # 🏋️ RL training environment
+├── train_rl.py               # 🤖 RL training script
+├── requirements.txt          # 📦 Dependencies
+├── calibration_data/         # 📐 Camera calibration files
+├── models/                   # 🧠 Trained RL models
+├── good_models/              # ✅ Best model backups
+└── media/                    # 📸 Documentation images
 ```
 
-## 🤖 Reinforcement Learning Details
+## 🤖 Reinforcement Learning
 
-### Environment Specifications
-- **Observation Space**: 6D - Ball position (x,y), velocity (vx,vy), table angles (pitch,roll)
-- **Action Space**: 2D - Changes to table pitch and roll angles (±0.05 rad)
-- **Physics**: Realistic 25cm table, 2.7g ball, proper friction and inertia
-- **Control Frequency**: 50Hz (servo-realistic timing)
-
-### Advanced Reward Engineering
-- **Position Dominance**: Primary reward for staying near center (3x weight)
-- **Control Energy Function**: PD controller guidance for optimal actions
-- **Bang-bang Penalty**: Sophisticated oscillation detection and prevention
-- **Circular Motion Detection**: Prevents orbital patterns around center
-- **Velocity Context**: Smart velocity penalties based on ball position
-
-### Training Configuration
-- **Algorithm**: PPO (Proximal Policy Optimization) from stable-baselines3
-- **Training Steps**: 330,000+ steps with checkpoints every 10k
-- **Evaluation**: Comprehensive eval every 10k steps
-- **Monitoring**: TensorBoard logs with detailed metrics
-
-Monitor training progress:
+### Training New Models
 ```bash
+# Train RL agent
+python train_rl.py --mode train --freq 50
+
+# Monitor training progress
 tensorboard --logdir=./tensorboard_logs/
 ```
+
+### Environment Details
+- **Observation**: Ball position (x,y), velocity (vx,vy), table angles (pitch,roll)
+- **Actions**: Table angle changes (±0.05 rad)  
+- **Reward**: Distance minimization + energy optimization + oscillation prevention
+- **Physics**: 25cm table, 2.7g ball, realistic dynamics
 
 ### Training Results
 
@@ -117,93 +160,126 @@ The PPO training shows excellent convergence with the improved reward function:
 
 **Key Training Metrics:**
 - **Episode Reward Mean**: Steady improvement from -100 to optimal performance
-- **Evaluation Mean Reward**: Consistent high performance during evaluation phases  
+- **Evaluation Mean Reward**: Consistent high performance during evaluation phases
 - **Learning Rate**: Adaptive scheduling for stable convergence
 - **Training Steps**: 330,000+ steps with checkpoints every 10k steps
 
 The training demonstrates the effectiveness of our advanced reward engineering, with the agent learning to avoid bang-bang oscillations and achieving smooth, efficient control.
 
-## 📊 Performance Monitoring
+## 📷 Camera Calibration
 
-### Visual Dashboard Features
-- **Ball Position Tracker**: Real-time top-down view with table boundary
-- **Control Action Bars**: Live display of pitch/roll commands with magnitude indicators
-- **Table Angle Monitor**: Current table orientation with safety limits
-- **Performance Metrics**: Distance, velocity, action magnitude, and control method
-- **Color-coded Status**: Green (excellent), Yellow (good), Red (poor) performance indicators
+The system uses blue corner markers for camera-to-table coordinate transformation:
 
-### Thread-safe Architecture
-- **Non-blocking Updates**: Dashboard updates don't interfere with control timing
-- **Queue-based Communication**: Smooth data flow between simulation and visualization
-- **Optimized Rendering**: Blitting and selective updates for 60+ FPS dashboard performance
+```bash
+# Interactive calibration (recommended)
+python compare_control.py --camera hybrid --calibrate
+# Choose option 1 for interactive calibration
 
-## 🎯 Hardware-Ready Design
+# Or run calibration separately
+python camera_calibration_color.py
+```
 
-### Real-world Compatibility
-- **Servo Timing**: 50Hz control frequency matches standard servo update rates
-- **Realistic Dimensions**: 25cm×25cm table matches typical hardware builds
-- **Physical Properties**: 2.7g ping pong ball with realistic friction coefficients
-- **Sensor Simulation**: Position estimation mimics camera/sensor input
+**Calibration Process:**
+1. Setup 35×35cm base plate with 4 blue markers at corners
+2. Position RealSense camera above table
+3. Run calibration to capture marker positions
+4. System automatically calculates coordinate transformation
 
-### Control Theory Implementation
-- **PD Controller Guidance**: RL reward function includes optimal action calculation
-- **Bang-bang Prevention**: Advanced oscillation detection prevents instability
-- **Energy Optimization**: Minimal control effort for maximum stability
+## 🦾 Servo Integration
+
+### Hardware Configuration
+- **Servo IDs**: 1 (pitch), 2 (roll)
+- **Communication**: COM5, 1Mbps (configurable)
+- **Range**: ±3° table movement for half servo range
+- **Protocol**: Dynamixel Protocol 2.0
+
+### Kinematic Model
+```python
+# Table angle to servo position conversion
+STEPS_PER_RADIAN = 29,325  # Approximately
+servo_position = center_position + (angle_rad * STEPS_PER_RADIAN)
+```
+
+### Testing Servos
+```bash
+# Test servo functionality
+python servo_controller.py
+```
 
 ## 🔬 Advanced Features
 
-### Model Management
-- **Automatic Checkpointing**: Models saved every 10,000 training steps
-- **Best Model Tracking**: Automatic backup of highest-performing models
-- **Recovery Tools**: Utilities for checkpoint analysis and model recovery
+### Multi-Mode Operation
+- Seamlessly switch between simulation, hybrid, and hardware modes
+- Camera calibration integrates with existing simulation
+- Servo control mirrors simulation movements
 
-### Debugging and Analysis
-- **RL Debugging**: Comprehensive tools for analyzing agent behavior
-- **Performance Comparison**: Side-by-side PID vs RL evaluation
-- **Visual Analysis**: Real-time monitoring of control decisions
+### Safety Features
+- **Angle Limits**: Software limits prevent servo damage
+- **Connection Monitoring**: Automatic fallback if hardware disconnects  
+- **Calibration Validation**: Ensures reliable camera-table mapping
 
-## 🚀 Next Steps
+### Performance Optimization
+- **50Hz Control Loop**: Matches servo update rates
+- **Thread-safe Visuals**: Non-blocking dashboard updates
+- **Efficient Communication**: Optimized servo commands and camera processing
 
-### Immediate Improvements
-1. **Hardware Integration**: Connect to actual servos and camera system
-2. **Computer Vision**: Replace simulated position with real camera input
-3. **Parameter Optimization**: Use the visual dashboard to fine-tune PID gains
+## 🚀 Development Workflow
 
-### Advanced Development
-1. **Multi-ball Scenarios**: Handle multiple balls simultaneously
-2. **Disturbance Rejection**: Add external forces and vibrations
-3. **Adaptive Control**: Online learning and parameter adjustment
-4. **Curriculum Learning**: Progressive difficulty increase during training
+### 1. Algorithm Development
+```bash
+# Develop and test in pure simulation
+python compare_control.py --control pid --visuals
+```
 
-### Research Directions
-1. **Advanced RL Algorithms**: Experiment with SAC, TD3, or custom architectures
-2. **Transfer Learning**: Train in simulation, deploy on hardware
-3. **Robust Control**: Handle model uncertainties and real-world variations
+### 2. Camera Integration Testing  
+```bash
+# Test camera integration with hybrid mode
+python compare_control.py --camera hybrid --visuals
+```
 
-## 💡 Tips for Development
+### 3. Hardware Deployment
+```bash
+# Deploy to real hardware
+python compare_control.py --camera real --servos --calibrate
+```
 
-### For RL Training
-- Monitor the visual dashboard during training to understand agent behavior
-- Use the comparison tool to validate RL performance against PID baseline
-- Watch for bang-bang oscillations - the reward function should prevent them
-- Training plateau around 200k steps is normal - the refined reward function continues improving
+### 4. Performance Analysis
+```bash
+# Compare control methods with full instrumentation
+python compare_control.py --camera hybrid --servos --visuals
+```
 
-### For Hardware Deployment
-- The 50Hz control frequency is optimized for standard servo systems
-- Ball position estimation logic is designed for camera input conversion
-- PID parameters are tuned for realistic response times and stability
+## 💡 Tips & Troubleshooting
 
-### For Experimentation
-- Use `--visuals` flag to understand what each control method is doing
-- Press `f` to toggle between fixed and random starting positions
-- The matplotlib dashboard provides insights into control effort and efficiency
+### Camera Issues
+- Ensure RealSense drivers are installed
+- Check USB 3.0 connection for camera
+- Verify blue markers are clearly visible and unobstructed
+- Re-run calibration if ball tracking seems inaccurate
+
+### Servo Issues  
+- Check COM port and baudrate settings
+- Verify Dynamixel power supply and connections
+- Test individual servos with manufacturer tools
+- Ensure servo IDs match configuration (1 for pitch, 2 for roll)
+
+### Performance Optimization
+- Use `--freq` to adjust control frequency based on hardware capabilities
+- Disable `--visuals` for maximum performance in deployment
+- Monitor CPU usage during camera processing
 
 ## 📋 System Requirements
 
-- Python 3.8+
-- PyBullet for physics simulation
-- stable-baselines3 for RL algorithms
-- matplotlib for real-time visualization
-- numpy, gymnasium for mathematical operations
+- **Python 3.8+**
+- **PyBullet** - Physics simulation
+- **OpenCV** - Camera processing  
+- **pyrealsense2** - RealSense camera support
+- **dynamixel_sdk** - Servo control
+- **stable-baselines3** - RL algorithms
+- **matplotlib** - Real-time visualization
 
-**Performance Note**: The visual dashboard is optimized for smooth operation but can be disabled for maximum simulation speed by omitting the `--visuals` flag.
+**Hardware Requirements:**
+- Intel RealSense D435i camera
+- 2× Dynamixel servos (XM430-W350 recommended)
+- USB-Serial interface for servos
+- 35×35cm base plate with blue corner markers
