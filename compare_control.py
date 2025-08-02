@@ -97,7 +97,6 @@ class BallBalanceComparison:
                     print("✅ IMU feedback enabled")
                 self.imu_connected = True
                 # Start background thread for IMU reading
-                import threading
                 self.imu_thread_running = True
                 self.imu_thread = threading.Thread(target=self._imu_reader_thread, daemon=True)
                 self.imu_thread.start()
@@ -909,9 +908,9 @@ class BallBalanceComparison:
                         pitch_error = pitch_angle - actual_pitch
                         roll_error = roll_angle - actual_roll
                         
-                        # Apply simple proportional correction (gain = 0.5 for stability)
-                        pitch_angle += 0.5 * pitch_error
-                        roll_angle += 0.5 * roll_error
+                        # Apply feedback correction to reduce the error (subtract error, don't add it!)
+                        pitch_angle -= 0.5 * pitch_error
+                        roll_angle -= 0.5 * roll_error
                         
                         # Store feedback info for display
                         self.imu_feedback_error = (pitch_error, roll_error)

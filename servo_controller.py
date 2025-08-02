@@ -134,15 +134,15 @@ class ServoController:
         
         try:
             # Convert angles to servo positions
-            # Assuming servo_ids[0] controls pitch, servo_ids[1] controls roll
+            # Corrected mapping: servo_ids[0] (ID 1) controls roll, servo_ids[1] (ID 2) controls pitch
             pitch_pos = self.angle_to_servo_position(pitch_rad)
             roll_pos = self.angle_to_servo_position(roll_rad)
             
             # Clear previous parameters
             self.group_sync_write.clearParam()
             
-            # Add servo commands
-            servo_positions = [pitch_pos, roll_pos]
+            # Add servo commands - correct order: [roll_pos, pitch_pos] for [ID1, ID2]
+            servo_positions = [roll_pos, pitch_pos]
             for i, servo_id in enumerate(self.servo_ids):
                 param = self.to_little_endian_bytes(servo_positions[i])
                 if not self.group_sync_write.addParam(servo_id, param):
