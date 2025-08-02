@@ -35,8 +35,15 @@ def monitor_imu(port="COM8"):
     
     # Connect to IMU
     try:
+        print(f"Connecting to {port}...")
         ser = serial.Serial(port, 115200, timeout=1)
         time.sleep(2)  # Wait for Arduino startup
+        
+        # Clear any junk from the buffer
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+        time.sleep(1)
+        
         print(f"Connected to {port}")
         print()
         print("Time      | Sample | Raw Pitch | Raw Roll | Cal Pitch | Cal Roll")
@@ -48,7 +55,8 @@ def monitor_imu(port="COM8"):
         while True:
             try:
                 if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8').strip()
+                    # Read with error handling for corrupted data
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
                     
                     if line.startswith("DATA:"):
                         # Skip startup zeros
@@ -65,18 +73,34 @@ def monitor_imu(port="COM8"):
                             
                             # Print the values
                             print(f"{elapsed:8.1f}s | {sample_count:6d} | {pitch:+8.1f}° | {roll:+7.1f}° | {cal_pitch:+8.1f}° | {cal_roll:+7.1f}°")
+                    
+                    elif "ERROR" in line or "WARNING" in line:
+                        print(f"Arduino: {line}")
                             
             except KeyboardInterrupt:
                 break
+            except UnicodeDecodeError:
+                # Skip corrupted data
+                ser.reset_input_buffer()
+                continue
             except Exception as e:
-                print(f"Error: {e}")
-                break
+                print(f"Error parsing data: {e}")
+                ser.reset_input_buffer()
+                continue
         
-        ser.close()
         print("\nDisconnected")
         
+    except serial.SerialException as e:
+        print(f"Serial error: {e}")
+        print("💡 Try unplugging and reconnecting the Arduino")
     except Exception as e:
         print(f"Failed to connect to {port}: {e}")
+    finally:
+        try:
+            if 'ser' in locals() and ser.is_open:
+                ser.close()
+        except:
+            pass
 
 if __name__ == "__main__":
     import argparse
