@@ -824,8 +824,8 @@ class BallBalanceComparison:
         # Basic PID uses only position error, but velocity is available if needed
         # Use control timestep for PID updates
         
-        if self.camera_mode == "hybrid":
-            # In hybrid mode, coordinate system is swapped to match camera
+        if self.camera_mode in ["hybrid", "real"]:
+            # In hybrid and real modes, coordinate system is swapped to match camera
             pitch_angle = -self.pitch_pid.update(ball_x, self.control_dt)  # ball_x controls pitch
             roll_angle = self.roll_pid.update(ball_y, self.control_dt)     # ball_y controls roll
         else:
@@ -880,12 +880,16 @@ class BallBalanceComparison:
                 ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
 
                 # Get ball height for collision detection
-                ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-                ball_z = ball_pos[2]
-                
-                if getattr(self, "camera_mode", None) == "hybrid":
-                    # In hybrid mode, update simulation ball position to match camera
-                    p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, ball_z], [0, 0, 0, 1])
+                if self.camera_mode == "real":
+                    # In real camera mode, assume ball is on the table
+                    ball_z = 0.08  # Reasonable height for ball on table
+                else:
+                    ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+                    ball_z = ball_pos[2]
+                    
+                    if self.camera_mode == "hybrid":
+                        # In hybrid mode, update simulation ball position to match camera
+                        p.resetBasePositionAndOrientation(self.ball_id, [ball_x, ball_y, ball_z], [0, 0, 0, 1])
                 
                 # Control logic - runs at control frequency
                 control_action = None
@@ -974,14 +978,18 @@ class BallBalanceComparison:
                     control_action = [pitch_change, roll_change]
                 
                 # Update table orientation
-                if self.camera_mode == "hybrid":
+                if self.camera_mode == "real":
+                    # In real camera mode, no PyBullet simulation to update
+                    pass
+                elif self.camera_mode == "hybrid":
                     # In hybrid mode, match real-world right-handed coordinate system
                     # PyBullet expects [roll, pitch, yaw] for right-handed system
                     quat = p.getQuaternionFromEuler([self.table_roll, self.table_pitch, 0])
+                    p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 else:
                     # In simulation mode, use original PyBullet convention for PID compatibility
                     quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
-                p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
+                    p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 
                 # Send angles to servo controller if enabled
                 if self.servo_controller:
@@ -1051,68 +1059,78 @@ class BallBalanceComparison:
                 self.step_count += 1
             
             # Handle keyboard input (check every physics step for responsiveness)
-            keys = p.getKeyboardEvents()
-            for key, state in keys.items():
-                if state & p.KEY_WAS_TRIGGERED:
-                    if key == ord('r'):
-                        print("Resetting ball...")
-                        self.reset_ball(randomize=self.randomize_ball)
-                        physics_step_count = 0  # Reset physics step counter
-                    elif key == ord('f'):
-                        self.randomize_ball = not self.randomize_ball
-                        mode = "Random" if self.randomize_ball else "Fixed"
-                        print(f"Ball position mode: {mode}")
-                        self.reset_ball(randomize=self.randomize_ball)
-                        physics_step_count = 0  # Reset physics step counter
-                    elif key == ord('p'):
-                        print("Switching to PID control")
-                        self.control_method = "pid"
-                        self.reset_ball(randomize=self.randomize_ball)
-                        physics_step_count = 0  # Reset physics step counter
-                    elif key == ord('l'):
-                        print("Switching to RL control")
-                        if self.rl_model is not None:
-                            self.control_method = "rl"
+            if self.camera_mode != "real":
+                # Only use PyBullet keyboard events if PyBullet is running
+                keys = p.getKeyboardEvents()
+                for key, state in keys.items():
+                    if state & p.KEY_WAS_TRIGGERED:
+                        if key == ord('r'):
+                            print("Resetting ball...")
                             self.reset_ball(randomize=self.randomize_ball)
                             physics_step_count = 0  # Reset physics step counter
-                        else:
-                            print("RL model not available. Attempting to load...")
-                            self.load_rl_model()
+                        elif key == ord('f'):
+                            self.randomize_ball = not self.randomize_ball
+                            mode = "Random" if self.randomize_ball else "Fixed"
+                            print(f"Ball position mode: {mode}")
+                            self.reset_ball(randomize=self.randomize_ball)
+                            physics_step_count = 0  # Reset physics step counter
+                        elif key == ord('p'):
+                            print("Switching to PID control")
+                            self.control_method = "pid"
+                            self.reset_ball(randomize=self.randomize_ball)
+                            physics_step_count = 0  # Reset physics step counter
+                        elif key == ord('l'):
+                            print("Switching to RL control")
                             if self.rl_model is not None:
                                 self.control_method = "rl"
                                 self.reset_ball(randomize=self.randomize_ball)
                                 physics_step_count = 0  # Reset physics step counter
-                                print("✅ RL control activated!")
                             else:
-                                print("❌ Still no RL model available")
-                    elif key == ord('c'):
-                        # Calibrate IMU offsets
-                        if self.imu_connected:
-                            print("🧭 Starting IMU calibration...")
-                            if self.calibrate_imu_offsets():
-                                print("✅ IMU calibration completed!")
+                                print("RL model not available. Attempting to load...")
+                                self.load_rl_model()
+                                if self.rl_model is not None:
+                                    self.control_method = "rl"
+                                    self.reset_ball(randomize=self.randomize_ball)
+                                    physics_step_count = 0  # Reset physics step counter
+                                    print("✅ RL control activated!")
+                                else:
+                                    print("❌ Still no RL model available")
+                        elif key == ord('c'):
+                            # Calibrate IMU offsets
+                            if self.imu_connected:
+                                print("🧭 Starting IMU calibration...")
+                                if self.calibrate_imu_offsets():
+                                    print("✅ IMU calibration completed!")
+                                else:
+                                    print("❌ IMU calibration failed!")
                             else:
-                                print("❌ IMU calibration failed!")
-                        else:
-                            print("❌ IMU not connected - cannot calibrate")
-                    elif key == ord('q'):
-                        print("Quitting...")
-                        if self.enable_visuals:
-                            self.visual_thread_running = False
-                        if self.enable_imu:
-                            self.imu_thread_running = False
-                        if self.servo_controller:
-                            self.servo_controller.disconnect()
-                        if self.camera_interface:
-                            self.camera_interface.stop_tracking()
-                            self.camera_interface.cleanup()
-                        if self.imu_interface:
-                            self.imu_interface.cleanup()
-                        return
+                                print("❌ IMU not connected - cannot calibrate")
+                        elif key == ord('q'):
+                            print("Quitting...")
+                            if self.enable_visuals:
+                                self.visual_thread_running = False
+                            if self.enable_imu:
+                                self.imu_thread_running = False
+                            if self.servo_controller:
+                                self.servo_controller.disconnect()
+                            if self.camera_interface:
+                                self.camera_interface.stop_tracking()
+                                self.camera_interface.cleanup()
+                            if self.imu_interface:
+                                self.imu_interface.cleanup()
+                            return
+            else:
+                # In real mode, handle keyboard input differently or use a simple loop check
+                # For now, just provide terminal-based control
+                pass
             
-            # Always step physics at physics frequency
-            p.stepSimulation()
-            time.sleep(self.physics_dt)
+            # Always step physics at physics frequency (only if PyBullet is running)
+            if self.camera_mode != "real":
+                p.stepSimulation()
+                time.sleep(self.physics_dt)
+            else:
+                # In real mode, just sleep at control frequency
+                time.sleep(self.control_dt)
             physics_step_count += 1
 
 
@@ -1225,7 +1243,12 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        p.disconnect()
+        # Only disconnect if PyBullet was connected
+        try:
+            if args.camera != "real":
+                p.disconnect()
+        except:
+            pass  # Ignore disconnect errors
 
 
 if __name__ == "__main__":
