@@ -24,17 +24,29 @@ except ImportError:
     CAMERA_AVAILABLE = False
     print("⚠️ Camera interface not available (missing camera_interface.py or dependencies)")
 
+# Optional IMU feedback
+try:
+    import sys
+    sys.path.append('imu')
+    from imu_simple import SimpleBNO055Interface
+    IMU_AVAILABLE = True
+except ImportError:
+    IMU_AVAILABLE = False
+    print("⚠️ IMU interface not available (missing imu_simple.py or dependencies)")
+
 
 class BallBalanceComparison:
     """
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation"):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
         self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
         self.enable_servos = enable_servos  # Flag to enable/disable servo control
+        self.enable_imu = enable_imu  # Flag to enable/disable IMU feedback
+        self.imu_control = imu_control  # Flag to enable IMU control mode (table follows IMU)
         self.camera_mode = camera_mode  # Camera mode: "simulation", "hybrid", or "real"
         
         # Timing parameters
@@ -58,6 +70,42 @@ class BallBalanceComparison:
                 self.servo_controller = None
         elif self.enable_servos:
             print("❌ Servo control requested but not available")
+        
+        # IMU controller for real-time feedback
+        self.imu_interface = None
+        self.imu_pitch = 0.0  # Current IMU pitch reading
+        self.imu_roll = 0.0   # Current IMU roll reading
+        self.imu_heading = 0.0  # Current IMU heading reading
+        self.imu_connected = False
+        
+        # IMU offset calibration (for handling IMU baseline errors)
+        self.imu_pitch_offset = 0.0  # Offset to subtract from pitch readings
+        self.imu_roll_offset = 0.0   # Offset to subtract from roll readings
+        self.imu_calibrated = False  # Flag indicating if offsets have been calibrated
+        self.calibration_samples = []  # For collecting calibration data
+        self.imu_feedback_error = (0.0, 0.0)  # Track commanded vs actual angle errors
+        
+        # Try to load embedded IMU calibration data first
+        self.load_embedded_imu_calibration()
+        
+        if (self.enable_imu or self.imu_control) and IMU_AVAILABLE:
+            self.imu_interface = SimpleBNO055Interface(port=imu_port)
+            if self.imu_interface.connect():
+                if self.imu_control:
+                    print("✅ IMU control mode enabled - table will follow IMU movements")
+                else:
+                    print("✅ IMU feedback enabled")
+                self.imu_connected = True
+                # Start background thread for IMU reading
+                import threading
+                self.imu_thread_running = True
+                self.imu_thread = threading.Thread(target=self._imu_reader_thread, daemon=True)
+                self.imu_thread.start()
+            else:
+                print("❌ Failed to connect to IMU, continuing without IMU feedback")
+                self.imu_interface = None
+        elif (self.enable_imu or self.imu_control):
+            print("❌ IMU feedback requested but not available")
         
         # Camera interface
         self.camera_interface = None
@@ -451,12 +499,24 @@ class BallBalanceComparison:
                     else:
                         text_color = 'red'
                     
-                    status_text.set_text(
-                        f"Control: {data['method'].upper():<3} | Step: {data['step']:<6} | Distance: {data['distance']:.3f}m\n"
-                        f"Ball Pos: ({data['ball_x']:+.3f}, {data['ball_y']:+.3f}) | Velocity: {velocity_mag:.3f} m/s\n"
-                        f"Action: [{data['action'][0]:+.3f}, {data['action'][1]:+.3f}] | Magnitude: {action_mag:.4f}\n"
+                    # Build status text with IMU feedback if available
+                    status_lines = [
+                        f"Control: {data['method'].upper():<3} | Step: {data['step']:<6} | Distance: {data['distance']:.3f}m",
+                        f"Ball Pos: ({data['ball_x']:+.3f}, {data['ball_y']:+.3f}) | Velocity: {velocity_mag:.3f} m/s",
+                        f"Action: [{data['action'][0]:+.3f}, {data['action'][1]:+.3f}] | Magnitude: {action_mag:.4f}",
                         f"Table: Pitch {data['pitch']:+.3f} | Roll {data['roll']:+.3f}"
-                    )
+                    ]
+                    
+                    # Add IMU feedback if connected
+                    if data['imu']['connected']:
+                        imu_pitch_diff = data['imu']['pitch'] - np.degrees(data['pitch'])
+                        imu_roll_diff = data['imu']['roll'] - np.degrees(data['roll'])
+                        status_lines.append(
+                            f"IMU: Pitch {data['imu']['pitch']:+.1f}° Roll {data['imu']['roll']:+.1f}° | "
+                            f"Diff: P{imu_pitch_diff:+.1f}° R{imu_roll_diff:+.1f}°"
+                        )
+                    
+                    status_text.set_text('\n'.join(status_lines))
                     status_text.set_color(text_color)
                 
             except queue.Empty:
@@ -476,7 +536,7 @@ class BallBalanceComparison:
         
         print("Dashboard window closed")
     
-    def _update_visual_data(self, ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step):
+    def _update_visual_data(self, ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step, imu_feedback=None):
         """Send data to visual thread via queue (completely thread-safe)"""
         if self.enable_visuals:
             try:
@@ -490,7 +550,8 @@ class BallBalanceComparison:
                     'distance': distance,
                     'pitch': self.table_pitch,
                     'roll': self.table_roll,
-                    'action': control_action if control_action else [0.0, 0.0]
+                    'action': control_action if control_action else [0.0, 0.0],
+                    'imu': imu_feedback if imu_feedback else {'connected': False, 'pitch': 0.0, 'roll': 0.0, 'heading': 0.0}
                 }
                 # Try to put data, if queue is full, remove oldest and add new
                 try:
@@ -503,6 +564,162 @@ class BallBalanceComparison:
                         pass  # Queue became empty, just skip
             except Exception:
                 pass  # Skip any queue errors to avoid affecting simulation
+    
+    def _imu_reader_thread(self):
+        """Background thread to continuously read IMU data"""
+        import time
+        
+        print("🧭 IMU reader thread started")
+        
+        while self.imu_thread_running and self.imu_interface:
+            try:
+                line = self.imu_interface.read_line()
+                if line and line.startswith("DATA: "):
+                    # Parse IMU data: "DATA: heading,pitch,roll"
+                    try:
+                        data_part = line[6:]  # Remove "DATA: " prefix
+                        heading, pitch, roll = map(float, data_part.split(','))
+                        
+                        # Update IMU readings (thread-safe atomic operations)
+                        self.imu_heading = heading
+                        self.imu_pitch = pitch
+                        self.imu_roll = roll
+                        
+                    except Exception as e:
+                        # Skip malformed data
+                        pass
+                        
+            except Exception as e:
+                # If there's a connection error, try to reconnect
+                print(f"⚠️ IMU reading error: {e}")
+                time.sleep(0.1)  # Shorter wait before retry (was 1 second)
+                
+            time.sleep(0.005)  # 200Hz reading rate for IMU control (was 100Hz)
+        
+        print("🧭 IMU reader thread stopped")
+    
+    def get_imu_feedback(self):
+        """Get current IMU readings as feedback for control comparison"""
+        if self.imu_connected:
+            # Apply offset calibration
+            calibrated_pitch = self.imu_pitch - self.imu_pitch_offset
+            calibrated_roll = self.imu_roll - self.imu_roll_offset
+            
+            return {
+                'heading': self.imu_heading,
+                'pitch': calibrated_pitch,
+                'roll': calibrated_roll,
+                'connected': True,
+                'calibrated': self.imu_calibrated
+            }
+        else:
+            return {
+                'heading': 0.0,
+                'pitch': 0.0,
+                'roll': 0.0,
+                'connected': False,
+                'calibrated': False
+            }
+    
+    def load_embedded_imu_calibration(self, filename="imu/embedded_imu_calibration.txt"):
+        """Load calibration data from embedded IMU calibration file"""
+        try:
+            if not os.path.exists(filename):
+                print(f"ℹ️ No embedded IMU calibration file found ({filename})")
+                return False
+            
+            print(f"📁 Loading embedded IMU calibration from {filename}...")
+            
+            with open(filename, 'r') as f:
+                lines = f.readlines()
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('level_pitch_offset'):
+                    self.imu_pitch_offset = float(line.split('=')[1].strip())
+                elif line.startswith('level_roll_offset'):
+                    self.imu_roll_offset = float(line.split('=')[1].strip())
+            
+            if self.imu_pitch_offset != 0.0 or self.imu_roll_offset != 0.0:
+                self.imu_calibrated = True
+                print(f"✅ Loaded embedded IMU calibration:")
+                print(f"   📐 Pitch offset: {self.imu_pitch_offset:+.2f}°")
+                print(f"   📐 Roll offset:  {self.imu_roll_offset:+.2f}°")
+                return True
+            else:
+                print(f"⚠️ Calibration file found but offsets are zero")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Failed to load embedded IMU calibration: {e}")
+            return False
+    
+    def calibrate_imu_offsets(self, num_samples=50):
+        """Calibrate IMU offsets by assuming table starts level"""
+        import time
+        
+        if not self.imu_connected:
+            print("❌ IMU not connected, cannot calibrate")
+            return False
+        
+        print(f"🧭 Calibrating IMU offsets...")
+        print(f"📋 Make sure your table is LEVEL and press Enter to start calibration")
+        input("   Press Enter when table is level...")
+        
+        print(f"📊 Collecting {num_samples} samples for offset calibration...")
+        self.calibration_samples = []
+        
+        # Collect samples
+        for i in range(num_samples):
+            if not self.imu_connected:
+                print("❌ IMU disconnected during calibration")
+                return False
+            
+            self.calibration_samples.append({
+                'pitch': self.imu_pitch,
+                'roll': self.imu_roll
+            })
+            
+            if (i + 1) % 10 == 0:
+                print(f"   Sample {i + 1}/{num_samples} - P:{self.imu_pitch:+.1f}° R:{self.imu_roll:+.1f}°")
+            
+            time.sleep(0.1)  # 10Hz sampling for calibration
+        
+        # Calculate offsets (average of all samples)
+        pitch_samples = [s['pitch'] for s in self.calibration_samples]
+        roll_samples = [s['roll'] for s in self.calibration_samples]
+        
+        self.imu_pitch_offset = np.mean(pitch_samples)
+        self.imu_roll_offset = np.mean(roll_samples)
+        
+        # Calculate standard deviation to assess calibration quality
+        pitch_std = np.std(pitch_samples)
+        roll_std = np.std(roll_samples)
+        
+        self.imu_calibrated = True
+        
+        print(f"✅ IMU offset calibration complete!")
+        print(f"   📐 Pitch offset: {self.imu_pitch_offset:+.2f}° (std: {pitch_std:.2f}°)")
+        print(f"   📐 Roll offset:  {self.imu_roll_offset:+.2f}° (std: {roll_std:.2f}°)")
+        
+        if pitch_std > 0.5 or roll_std > 0.5:
+            print(f"⚠️ High standard deviation detected - table may not be stable")
+            print(f"   Consider recalibrating on a more stable surface")
+        else:
+            print(f"✅ Calibration quality: Good (low noise)")
+        
+        return True
+    
+    def get_calibrated_imu_angles(self):
+        """Get IMU angles with offset compensation applied"""
+        if not self.imu_connected:
+            return 0.0, 0.0
+        
+        # Apply offsets to get true angles relative to calibrated level
+        pitch_rad = np.radians(self.imu_pitch - self.imu_pitch_offset)
+        roll_rad = np.radians(self.imu_roll - self.imu_roll_offset)
+        
+        return pitch_rad, roll_rad
     
     def load_rl_model(self):
         """Load trained RL model"""
@@ -622,9 +839,18 @@ class BallBalanceComparison:
         print("  'r' - Reset ball")
         print("  'f' - Toggle fixed/random ball position")
         print("  'p' - Switch to PID control")
-        print("  'l' - Switch to RL control") 
+        print("  'l' - Switch to RL control")
+        if self.imu_connected:
+            print("  'c' - Calibrate IMU offsets (make table level first!)")
         print("  'q' - Quit")
-        print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
+        
+        if self.imu_control:
+            print(f"🧭 IMU CONTROL MODE - Table follows IMU movements")
+            print(f"   📋 Calibration status: {'✅ Calibrated (precise)' if self.imu_calibrated else '⚠️ Uncalibrated (direct raw angles)'}")
+            print(f"   💡 Press 'c' to calibrate for precise zero-reference control")
+            print(f"   🎮 Table responds immediately to IMU movements!")
+        else:
+            print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
         physics_step_count = 0  # Track physics steps
         
@@ -646,17 +872,85 @@ class BallBalanceComparison:
                 
                 # Control logic - runs at control frequency
                 control_action = None
-                if self.control_method == "pid":
+                if self.imu_control:
+                    # IMU Control Mode: Table follows IMU movements
+                    if self.imu_connected:
+                        if self.imu_calibrated:
+                            # Use calibrated angles - these represent the TRUE physical table angles
+                            pitch_rad, roll_rad = self.get_calibrated_imu_angles()
+                        else:
+                            # Use raw angles for immediate response (no calibration required)
+                            pitch_rad = np.radians(self.imu_pitch)
+                            roll_rad = np.radians(self.imu_roll)
+                        
+                        # Set simulation table to match the TRUE physical table angles
+                        self.table_pitch = pitch_rad
+                        self.table_roll = roll_rad
+                        
+                        # Limit to safe angles
+                        self.table_pitch = np.clip(self.table_pitch, -0.15, 0.15)  # ~8.6 degrees max
+                        self.table_roll = np.clip(self.table_roll, -0.15, 0.15)
+                        
+                        control_action = [self.table_pitch, self.table_roll]
+                    else:
+                        # If IMU not connected, keep table level
+                        self.table_pitch = 0.0
+                        self.table_roll = 0.0
+                        control_action = [0.0, 0.0]
+                elif self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
+                    
+                    # IMU Feedback Correction (if IMU available and not in IMU control mode)
+                    if self.imu_connected and self.imu_calibrated:
+                        # Get actual table angles from IMU
+                        actual_pitch, actual_roll = self.get_calibrated_imu_angles()
+                        
+                        # Calculate angle errors (commanded vs actual)
+                        pitch_error = pitch_angle - actual_pitch
+                        roll_error = roll_angle - actual_roll
+                        
+                        # Apply simple proportional correction (gain = 0.5 for stability)
+                        pitch_angle += 0.5 * pitch_error
+                        roll_angle += 0.5 * roll_error
+                        
+                        # Store feedback info for display
+                        self.imu_feedback_error = (pitch_error, roll_error)
+                    
                     # For PID, these are absolute angles
                     self.table_pitch = pitch_angle
                     self.table_roll = roll_angle
                     control_action = [pitch_angle, roll_angle]
                 else:  # RL
                     pitch_change, roll_change = self.rl_control(observation)
-                    # For RL, these are angle changes
-                    self.table_pitch += pitch_change
-                    self.table_roll += roll_change
+                    
+                    # Apply RL action to get new intended table angles
+                    new_table_pitch = self.table_pitch + pitch_change
+                    new_table_roll = self.table_roll + roll_change
+                    
+                    # IMU Feedback Correction for RL (if IMU available and not in IMU control mode)
+                    if self.imu_connected and self.imu_calibrated:
+                        # Get actual current table angles from IMU
+                        actual_pitch, actual_roll = self.get_calibrated_imu_angles()
+                        
+                        # Calculate error between current simulation angle and actual IMU angle
+                        sim_imu_pitch_error = self.table_pitch - actual_pitch
+                        sim_imu_roll_error = self.table_roll - actual_roll
+                        
+                        # Correct the new target angles based on the simulation vs reality offset
+                        # This compensates for the fact that simulation might be out of sync with reality
+                        corrected_pitch = new_table_pitch - 0.2 * sim_imu_pitch_error
+                        corrected_roll = new_table_roll - 0.2 * sim_imu_roll_error
+                        
+                        # Store feedback info for display (showing sim vs IMU error)
+                        self.imu_feedback_error = (sim_imu_pitch_error, sim_imu_roll_error)
+                        
+                        # Use corrected angles
+                        self.table_pitch = corrected_pitch
+                        self.table_roll = corrected_roll
+                    else:
+                        # No IMU feedback - use RL action directly
+                        self.table_pitch = new_table_pitch
+                        self.table_roll = new_table_roll
                     # Clip to reasonable limits
                     self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
                     self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
@@ -670,10 +964,13 @@ class BallBalanceComparison:
                 if self.servo_controller:
                     self.servo_controller.set_table_angles(self.table_pitch, self.table_roll)
                 
+                # Get IMU feedback for comparison/monitoring
+                imu_feedback = self.get_imu_feedback()
+                
                 # Update visual data (thread-safe) - every 10 steps for smoother updates
                 if self.step_count % 10 == 0:
                     distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count)
+                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, imu_feedback)
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 # Check if ball fell off - 25cm table (radius = 0.125m)
@@ -700,8 +997,33 @@ class BallBalanceComparison:
                 # Print status occasionally (reduced frequency when visuals are enabled)
                 print_freq = self.control_freq * 10 if self.enable_visuals else self.control_freq
                 if self.step_count % print_freq == 0:
-                    print(f"Step: {self.step_count}, Method: {self.control_method.upper()}, "
-                          f"Distance: {distance_from_center:.3f}m")
+                    if self.imu_control:
+                        # IMU control mode status
+                        if self.imu_connected:
+                            imu_feedback = self.get_imu_feedback()
+                            status_line = f"Step: {self.step_count}, IMU CONTROL, Distance: {distance_from_center:.3f}m"
+                            status_line += f" | IMU: P{self.imu_pitch:+.1f}° R{self.imu_roll:+.1f}°"
+                            status_line += f" | Table: P{np.degrees(self.table_pitch):+.1f}° R{np.degrees(self.table_roll):+.1f}°"
+                            if self.imu_calibrated:
+                                status_line += " | 📐 CALIBRATED"
+                            else:
+                                status_line += " | 🔄 RAW"
+                        else:
+                            status_line = f"Step: {self.step_count}, IMU CONTROL - ❌ IMU NOT CONNECTED"
+                    else:
+                        # Normal PID/RL control mode status
+                        status_line = f"Step: {self.step_count}, Method: {self.control_method.upper()}, Distance: {distance_from_center:.3f}m"
+                        
+                        # Add IMU feedback to status if connected
+                        if imu_feedback['connected']:
+                            status_line += f" | IMU: P{imu_feedback['pitch']:+.1f}° R{imu_feedback['roll']:+.1f}°"
+                            
+                            # Show feedback errors if using IMU feedback correction
+                            if hasattr(self, 'imu_feedback_error') and (abs(self.imu_feedback_error[0]) > 0.1 or abs(self.imu_feedback_error[1]) > 0.1):
+                                pitch_err, roll_err = self.imu_feedback_error
+                                status_line += f" | Err: P{np.degrees(pitch_err):+.1f}° R{np.degrees(roll_err):+.1f}° | 🔄 FB"
+                    
+                    print(status_line)
                 
                 self.step_count += 1
             
@@ -740,15 +1062,29 @@ class BallBalanceComparison:
                                 print("✅ RL control activated!")
                             else:
                                 print("❌ Still no RL model available")
+                    elif key == ord('c'):
+                        # Calibrate IMU offsets
+                        if self.imu_connected:
+                            print("🧭 Starting IMU calibration...")
+                            if self.calibrate_imu_offsets():
+                                print("✅ IMU calibration completed!")
+                            else:
+                                print("❌ IMU calibration failed!")
+                        else:
+                            print("❌ IMU not connected - cannot calibrate")
                     elif key == ord('q'):
                         print("Quitting...")
                         if self.enable_visuals:
                             self.visual_thread_running = False
+                        if self.enable_imu:
+                            self.imu_thread_running = False
                         if self.servo_controller:
                             self.servo_controller.disconnect()
                         if self.camera_interface:
                             self.camera_interface.stop_tracking()
                             self.camera_interface.cleanup()
+                        if self.imu_interface:
+                            self.imu_interface.cleanup()
                         return
             
             # Always step physics at physics frequency
@@ -771,6 +1107,12 @@ def main():
                        help="Camera mode: simulation (no camera), hybrid (camera + physics), real (camera only)")
     parser.add_argument("--calibrate", action="store_true",
                        help="Perform camera calibration before starting")
+    parser.add_argument("--imu", action="store_true",
+                       help="Enable IMU feedback for real-time angle monitoring")
+    parser.add_argument("--imu-control", action="store_true",
+                       help="Enable IMU control mode (table follows IMU movements)")
+    parser.add_argument("--imu-port", default="COM6",
+                       help="COM port for IMU connection (default: COM6)")
     
     args = parser.parse_args()
     
@@ -779,7 +1121,10 @@ def main():
         control_freq=args.freq, 
         enable_visuals=args.visuals,
         enable_servos=args.servos,
-        camera_mode=args.camera
+        camera_mode=args.camera,
+        enable_imu=args.imu,
+        imu_port=args.imu_port,
+        imu_control=args.imu_control
     )
     
     try:
@@ -803,6 +1148,29 @@ def main():
             print("   2. PyBullet simulates physics and visualizes control")
             print("   3. Great for testing camera integration before hardware deployment")
             print("   4. Servo control" + (" enabled" if args.servos else " disabled"))
+            input("\n   Press Enter to continue...")
+        
+        # Additional instructions for IMU mode
+        if args.imu:
+            print("\n🧭 IMU Feedback Mode Instructions:")
+            print("   1. Ensure BNO055 IMU is connected via Arduino")
+            print("   2. IMU will provide real-time table angle feedback")
+            print("   3. Useful for comparing simulation vs real hardware")
+            print("   4. Dashboard will show simulation vs IMU angle differences")
+            print(f"   5. Using COM port: {args.imu_port}")
+            input("\n   Press Enter to continue...")
+        
+        # Additional instructions for IMU control mode
+        if args.imu_control:
+            print("\n🎮 IMU Control Mode Instructions:")
+            print("   1. Ensure BNO055 IMU is connected via Arduino")
+            print("   2. Table will respond IMMEDIATELY to IMU movements")
+            print("   3. Calibration is OPTIONAL - press 'c' for zero-reference precision")
+            print("   4. Physically tilt your table - simulation follows instantly!")
+            print("   5. Great for testing IMU responsiveness and ball physics")
+            print(f"   6. Using COM port: {args.imu_port}")
+            print("\n   📋 This mode disables PID/RL control - table follows your IMU directly")
+            print("   🚀 No calibration required - works immediately!")
             input("\n   Press Enter to continue...")
         
         simulator.run_simulation()
