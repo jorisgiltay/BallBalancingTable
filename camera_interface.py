@@ -330,6 +330,9 @@ class RealSenseCameraInterface:
             world_x *= COORDINATE_CORRECTION
             world_y *= COORDINATE_CORRECTION
             
+            # Invert Y coordinate to match simulation coordinate system
+            world_y = -world_y
+            
             return world_x, world_y
         except Exception as e:
             print(f"❌ Coordinate transformation error: {e}")

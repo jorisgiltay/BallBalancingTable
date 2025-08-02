@@ -134,15 +134,16 @@ class ServoController:
         
         try:
             # Convert angles to servo positions
-            # Corrected mapping: servo_ids[0] (ID 1) controls roll, servo_ids[1] (ID 2) controls pitch
+            # Hardware mapping: servo_ids[0] (ID 1) controls pitch, servo_ids[1] (ID 2) controls roll
+            # Note: ID 2 has inverted sign - positive servo command = negative roll
             pitch_pos = self.angle_to_servo_position(pitch_rad)
-            roll_pos = self.angle_to_servo_position(roll_rad)
+            roll_pos = self.angle_to_servo_position(-roll_rad)  # Invert roll for hardware
             
             # Clear previous parameters
             self.group_sync_write.clearParam()
             
-            # Add servo commands - correct order: [roll_pos, pitch_pos] for [ID1, ID2]
-            servo_positions = [roll_pos, pitch_pos]
+            # Add servo commands - correct order: [pitch_pos, roll_pos] for [ID1, ID2]
+            servo_positions = [pitch_pos, roll_pos]
             for i, servo_id in enumerate(self.servo_ids):
                 param = self.to_little_endian_bytes(servo_positions[i])
                 if not self.group_sync_write.addParam(servo_id, param):

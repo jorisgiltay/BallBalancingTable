@@ -355,6 +355,16 @@ class BallBalanceComparison:
         self.ball_radius = 0.02
         self.reset_ball()
         
+        # Add simple coordinate system axes
+        if self.camera_mode != "real":
+            axis_length = 0.1
+            p.addUserDebugLine([0, 0, 0.065], [axis_length, 0, 0.065], [1, 0, 0], lineWidth=3)  # X-axis red
+            p.addUserDebugLine([0, 0, 0.065], [0, axis_length, 0.065], [0, 1, 0], lineWidth=3)  # Y-axis green  
+            p.addUserDebugLine([0, 0, 0.065], [0, 0, 0.065 + axis_length], [0, 0, 1], lineWidth=3)  # Z-axis blue
+            p.addUserDebugText("X", [axis_length, 0, 0.065], textColorRGB=[1, 0, 0], textSize=2)
+            p.addUserDebugText("Y", [0, axis_length, 0.065], textColorRGB=[0, 1, 0], textSize=2)
+            p.addUserDebugText("Z", [0, 0, 0.065 + axis_length], textColorRGB=[0, 0, 1], textSize=2)
+        
         if self.camera_mode == "hybrid":
             print("🔗 Hybrid mode - camera input with simulated physics")
         
@@ -813,8 +823,16 @@ class BallBalanceComparison:
         """PID control logic with estimated velocity available (but not used in basic PID)"""
         # Basic PID uses only position error, but velocity is available if needed
         # Use control timestep for PID updates
-        pitch_angle = -self.pitch_pid.update(ball_y, self.control_dt)
-        roll_angle = self.roll_pid.update(ball_x, self.control_dt)
+        
+        if self.camera_mode == "hybrid":
+            # In hybrid mode, coordinate system is swapped to match camera
+            pitch_angle = -self.pitch_pid.update(ball_x, self.control_dt)  # ball_x controls pitch
+            roll_angle = self.roll_pid.update(ball_y, self.control_dt)     # ball_y controls roll
+        else:
+            # In simulation mode, use original mapping
+            pitch_angle = -self.pitch_pid.update(ball_y, self.control_dt)  # ball_y controls pitch
+            roll_angle = self.roll_pid.update(ball_x, self.control_dt)     # ball_x controls roll
+        
         return pitch_angle, roll_angle
     
     def rl_control(self, observation):
@@ -956,7 +974,13 @@ class BallBalanceComparison:
                     control_action = [pitch_change, roll_change]
                 
                 # Update table orientation
-                quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
+                if self.camera_mode == "hybrid":
+                    # In hybrid mode, match real-world right-handed coordinate system
+                    # PyBullet expects [roll, pitch, yaw] for right-handed system
+                    quat = p.getQuaternionFromEuler([self.table_roll, self.table_pitch, 0])
+                else:
+                    # In simulation mode, use original PyBullet convention for PID compatibility
+                    quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
                 p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 
                 # Send angles to servo controller if enabled
@@ -1114,7 +1138,6 @@ def main():
                        help="COM port for IMU connection (default: COM6)")
     parser.add_argument("--check-imu", action="store_true",
                        help="Quick check of IMU calibration accuracy (no simulation)")
-    
     args = parser.parse_args()
     
     # Quick IMU calibration check mode
@@ -1125,7 +1148,7 @@ def main():
         try:
             # Import the calibration checker
             sys.path.append('imu')
-            from check_calibration import CalibrationChecker
+            from imu.check_calibration import CalibrationChecker
             
             checker = CalibrationChecker(args.imu_port)
             checker.run_full_check()
@@ -1146,7 +1169,6 @@ def main():
         camera_mode=args.camera,
         enable_imu=args.imu,
         imu_port=args.imu_port,
-        imu_control=args.imu_control
     )
     
     try:

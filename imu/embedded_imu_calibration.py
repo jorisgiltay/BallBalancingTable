@@ -23,7 +23,7 @@ except ImportError:
 class EmbeddedIMUCalibrator:
     """Specialized calibration for embedded table IMUs"""
     
-    def __init__(self, imu_port="COM7"):
+    def __init__(self, imu_port="COM8"):
         self.imu_port = imu_port
         self.imu = None
         self.connected = False
@@ -348,7 +348,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Embedded IMU Calibration")
-    parser.add_argument("--port", default="COM7", help="IMU COM port")
+    parser.add_argument("--port", default="COM8", help="IMU COM port")
     args = parser.parse_args()
     
     calibrator = EmbeddedIMUCalibrator(args.port)
