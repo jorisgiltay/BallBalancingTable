@@ -1113,8 +1113,31 @@ def main():
                        help="Enable IMU control mode (table follows IMU movements)")
     parser.add_argument("--imu-port", default="COM6",
                        help="COM port for IMU connection (default: COM6)")
+    parser.add_argument("--check-imu", action="store_true",
+                       help="Quick check of IMU calibration accuracy (no simulation)")
     
     args = parser.parse_args()
+    
+    # Quick IMU calibration check mode
+    if args.check_imu:
+        print("🔍 Quick IMU Calibration Check")
+        print("=" * 40)
+        
+        try:
+            # Import the calibration checker
+            sys.path.append('imu')
+            from check_calibration import CalibrationChecker
+            
+            checker = CalibrationChecker(args.imu_port)
+            checker.run_full_check()
+            
+        except ImportError:
+            print("❌ Calibration checker not available")
+            print("   Make sure check_calibration.py is in the imu/ folder")
+        except Exception as e:
+            print(f"❌ Error during calibration check: {e}")
+        
+        return  # Exit after check
     
     simulator = BallBalanceComparison(
         control_method=args.control, 
