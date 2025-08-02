@@ -1,10 +1,10 @@
 # Embedded IMU Calibration Data
-# Generated: 2025-08-02 13:46:05.865995
-# IMU Port: COM7
+# Generated: 2025-08-02 15:13:39.373227
+# IMU Port: COM8
 
 # Level Reference Offsets
-level_pitch_offset = 1.1
-level_roll_offset = -5.8
+level_pitch_offset = -1.7413
+level_roll_offset = 4.4908
 
 # Gyroscope Bias Offsets
 gyro_offset_x = 0.0000
