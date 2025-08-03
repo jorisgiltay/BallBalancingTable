@@ -57,7 +57,7 @@ class BallBalanceComparison:
         
         # PID controllers (create these BEFORE setup_simulation)
         # Back to ultra-conservative gains - these work well for center stability
-        # Focus on proportional control, minimal derivative to prevent velocity-induced oscillations
+        # Increased damping to help suppress oscillations - derivative term acts as velocity brake
         # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
         self.pitch_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
         self.roll_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
