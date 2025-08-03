@@ -68,8 +68,8 @@ def monitor_imu(port="COM8"):
                             elapsed = time.time() - start_time
                             
                             # Calculate calibrated values
-                            cal_pitch = pitch + pitch_offset
-                            cal_roll = roll + roll_offset
+                            cal_pitch = pitch - pitch_offset
+                            cal_roll = roll - roll_offset
                             
                             # Print the values
                             print(f"{elapsed:8.1f}s | {sample_count:6d} | {pitch:+8.1f}° | {roll:+7.1f}° | {cal_pitch:+8.1f}° | {cal_roll:+7.1f}°")

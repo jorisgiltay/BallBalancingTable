@@ -21,10 +21,17 @@ class PIDController:
 
         output = self.kp * error + self.ki * self._integral + self.kd * derivative
 
+        # Apply output limits and prevent integral windup
         low, high = self.output_limits
-        if low is not None:
-            output = max(low, output)
-        if high is not None:
-            output = min(high, output)
+        if low is not None and output < low:
+            output = low
+            # Prevent integral windup by backing off the integral term
+            if self.ki != 0:
+                self._integral = (output - self.kp * error - self.kd * derivative) / self.ki
+        elif high is not None and output > high:
+            output = high
+            # Prevent integral windup by backing off the integral term
+            if self.ki != 0:
+                self._integral = (output - self.kp * error - self.kd * derivative) / self.ki
 
         return output

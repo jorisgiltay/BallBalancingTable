@@ -56,8 +56,11 @@ class BallBalanceComparison:
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
         
         # PID controllers (create these BEFORE setup_simulation)
-        self.pitch_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
-        self.roll_pid = PIDController(kp=10.0, ki=0.1, kd=2.0, output_limits=(-0.05, 0.05))
+        # Back to ultra-conservative gains - these work well for center stability
+        # Focus on proportional control, minimal derivative to prevent velocity-induced oscillations
+        # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
+        self.pitch_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
+        self.roll_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
         
         # Servo controller
         self.servo_controller = None
@@ -397,7 +400,7 @@ class BallBalanceComparison:
             p.removeBody(self.ball_id)
 
         self.ball_id = p.createMultiBody(
-            baseMass=0.0027,
+            baseMass=0.010,  # 10g - heavier ball for better control (was 2.7g)
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
             baseVisualShapeIndex=p.createVisualShape(
                 p.GEOM_SPHERE,
@@ -820,18 +823,21 @@ class BallBalanceComparison:
         return observation
     
     def pid_control(self, ball_x, ball_y, ball_vx, ball_vy):
-        """PID control logic with estimated velocity available (but not used in basic PID)"""
-        # Basic PID uses only position error, but velocity is available if needed
+        """PD control logic (no integral term needed for ball balancing)"""
         # Use control timestep for PID updates
+        
+        # Remove dead zone for maximum responsiveness - every movement should be corrected
+        ball_x_corrected = ball_x
+        ball_y_corrected = ball_y
         
         if self.camera_mode in ["hybrid", "real"]:
             # In hybrid and real modes, coordinate system is swapped to match camera
-            pitch_angle = -self.pitch_pid.update(ball_x, self.control_dt)  # ball_x controls pitch
-            roll_angle = self.roll_pid.update(ball_y, self.control_dt)     # ball_y controls roll
+            pitch_angle = -self.pitch_pid.update(ball_x_corrected, self.control_dt)  # ball_x controls pitch
+            roll_angle = self.roll_pid.update(ball_y_corrected, self.control_dt)     # ball_y controls roll
         else:
             # In simulation mode, use original mapping
-            pitch_angle = -self.pitch_pid.update(ball_y, self.control_dt)  # ball_y controls pitch
-            roll_angle = self.roll_pid.update(ball_x, self.control_dt)     # ball_x controls roll
+            pitch_angle = -self.pitch_pid.update(ball_y_corrected, self.control_dt)  # ball_y controls pitch
+            roll_angle = self.roll_pid.update(ball_x_corrected, self.control_dt)     # ball_x controls roll
         
         return pitch_angle, roll_angle
     
@@ -904,6 +910,7 @@ class BallBalanceComparison:
                             pitch_rad = np.radians(self.imu_pitch)
                             roll_rad = np.radians(self.imu_roll)
                         
+                        print(pitch_rad, roll_rad)
                         # Set simulation table to match the TRUE physical table angles
                         self.table_pitch = pitch_rad
                         self.table_roll = roll_rad
@@ -921,7 +928,12 @@ class BallBalanceComparison:
                 elif self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                     
+                    # Debug: Show raw PID output before any corrections
+                    if self.step_count % 25 == 0:
+                        print(f"DEBUG: Raw PID Output - Pitch: {pitch_angle:+.4f}, Roll: {roll_angle:+.4f}")
+                    
                     # IMU Feedback Correction (if IMU available and not in IMU control mode)
+                    # Re-enabled with conservative gains to help with edge recovery
                     if self.imu_connected and self.imu_calibrated:
                         # Get actual table angles from IMU
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
@@ -930,12 +942,27 @@ class BallBalanceComparison:
                         pitch_error = pitch_angle - actual_pitch
                         roll_error = roll_angle - actual_roll
                         
+                        # Debug: Show IMU correction details
+                        if self.step_count % 25 == 0:
+                            print(f"DEBUG: IMU Actual - Pitch: {actual_pitch:+.4f}, Roll: {actual_roll:+.4f}")
+                            print(f"DEBUG: IMU Error - Pitch: {pitch_error:+.4f}, Roll: {roll_error:+.4f}")
+                        
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
-                        pitch_angle -= 0.5 * pitch_error
-                        roll_angle -= 0.5 * roll_error
+                        # Very conservative gain to complement PID control without destabilizing
+                        pitch_angle -= 0.05 * pitch_error  # Gentle correction (reduced from 0.3)
+                        roll_angle -= 0.05 * roll_error
+                        
+                        # Debug: Show corrected angles
+                        if self.step_count % 25 == 0:
+                            print(f"DEBUG: After IMU Correction - Pitch: {pitch_angle:+.4f}, Roll: {roll_angle:+.4f}")
                         
                         # Store feedback info for display
                         self.imu_feedback_error = (pitch_error, roll_error)
+                    
+                    # Ensure final angles stay within servo limits after IMU correction
+                    pitch_angle = np.clip(pitch_angle, -0.0559, 0.0559)  # ±3.2°
+                    roll_angle = np.clip(roll_angle, -0.0559, 0.0559)   # ±3.2°
+                
                     
                     # For PID, these are absolute angles
                     self.table_pitch = pitch_angle
@@ -1010,6 +1037,17 @@ class BallBalanceComparison:
 
                 if ball_fell and not self._ball_reset:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")
+
+                    # Reset servos to level position when ball falls off
+                    if self.servo_controller:
+                        print("Resetting servos to level position...")
+                        self.servo_controller.set_table_angles(0.0, 0.0)
+                    
+                    # Reset PID controllers and table angles
+                    self.pitch_pid.reset()
+                    self.roll_pid.reset()
+                    self.table_pitch = 0.0
+                    self.table_roll = 0.0
 
                     if getattr(self, "camera_mode", None) == "hybrid":
                         print("Press R to reset the ball")
