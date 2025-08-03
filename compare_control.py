@@ -400,7 +400,7 @@ class BallBalanceComparison:
             p.removeBody(self.ball_id)
 
         self.ball_id = p.createMultiBody(
-            baseMass=0.010,  # 10g - heavier ball for better control (was 2.7g)
+            baseMass=0.0027,  # 
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
             baseVisualShapeIndex=p.createVisualShape(
                 p.GEOM_SPHERE,
@@ -949,8 +949,8 @@ class BallBalanceComparison:
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
                         # More responsive gain to complement PID control and speed up convergence
-                        pitch_angle -= 0.15 * pitch_error  # More responsive correction (was 0.05)
-                        roll_angle -= 0.15 * roll_error
+                        pitch_angle -= 0.1 * pitch_error  # More responsive correction (was 0.05)
+                        roll_angle -= 0.1 * roll_error
                         
                         # Debug: Show corrected angles
                         if self.step_count % 25 == 0:
@@ -986,8 +986,8 @@ class BallBalanceComparison:
                         
                         # Correct the new target angles based on the simulation vs reality offset
                         # This compensates for the fact that simulation might be out of sync with reality
-                        corrected_pitch = new_table_pitch - 0.2 * sim_imu_pitch_error
-                        corrected_roll = new_table_roll - 0.2 * sim_imu_roll_error
+                        corrected_pitch = new_table_pitch - 0.1 * sim_imu_pitch_error
+                        corrected_roll = new_table_roll - 0.1 * sim_imu_roll_error
                         
                         # Store feedback info for display (showing sim vs IMU error)
                         self.imu_feedback_error = (sim_imu_pitch_error, sim_imu_roll_error)
