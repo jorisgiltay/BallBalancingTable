@@ -60,8 +60,16 @@ class BallBalanceComparison:
         # Fast stabilization with stronger integral term for better centering
         # Higher integral gain ensures the system cares about being centered, not just stable
         # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
-        self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
+
+        #WITHOUT CAMERA RENDERING DELAY GAINS: 
+        self.pitch_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.roll_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
+
+        #WITH CAMERA RENDERING DELAY GAINS:
+        # self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
+        # self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
+
+
         
         # Servo controller
         self.servo_controller = None
