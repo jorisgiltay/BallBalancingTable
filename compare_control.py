@@ -56,11 +56,11 @@ class BallBalanceComparison:
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
         
         # PID controllers (create these BEFORE setup_simulation)
-        # Balanced gains for faster convergence while maintaining stability
-        # Small integral term helps eliminate steady-state error, moderate damping prevents overshoot
+        # Fast stabilization with stronger integral term for better centering
+        # Higher integral gain ensures the system cares about being centered, not just stable
         # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
-        self.pitch_pid = PIDController(kp=1.2, ki=0.02, kd=0.08, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=1.2, ki=0.02, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.pitch_pid = PIDController(kp=1.2, ki=0.25, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.roll_pid = PIDController(kp=1.2, ki=0.25, kd=0.08, output_limits=(-0.0524, 0.0524))
         
         # Servo controller
         self.servo_controller = None
