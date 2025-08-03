@@ -56,11 +56,11 @@ class BallBalanceComparison:
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
         
         # PID controllers (create these BEFORE setup_simulation)
-        # Back to ultra-conservative gains - these work well for center stability
-        # Increased damping to help suppress oscillations - derivative term acts as velocity brake
+        # Balanced gains for faster convergence while maintaining stability
+        # Small integral term helps eliminate steady-state error, moderate damping prevents overshoot
         # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
-        self.pitch_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=0.8, ki=0.0, kd=0.05, output_limits=(-0.0524, 0.0524))
+        self.pitch_pid = PIDController(kp=1.2, ki=0.02, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.roll_pid = PIDController(kp=1.2, ki=0.02, kd=0.08, output_limits=(-0.0524, 0.0524))
         
         # Servo controller
         self.servo_controller = None
@@ -948,9 +948,9 @@ class BallBalanceComparison:
                             print(f"DEBUG: IMU Error - Pitch: {pitch_error:+.4f}, Roll: {roll_error:+.4f}")
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
-                        # Very conservative gain to complement PID control without destabilizing
-                        pitch_angle -= 0.05 * pitch_error  # Gentle correction (reduced from 0.3)
-                        roll_angle -= 0.05 * roll_error
+                        # More responsive gain to complement PID control and speed up convergence
+                        pitch_angle -= 0.15 * pitch_error  # More responsive correction (was 0.05)
+                        roll_angle -= 0.15 * roll_error
                         
                         # Debug: Show corrected angles
                         if self.step_count % 25 == 0:
