@@ -56,6 +56,15 @@ class EmbeddedIMUCalibrator:
             print("❌ Failed to connect to embedded IMU")
             return False
     
+    def disconnect(self):
+        """Properly disconnect from IMU"""
+        if self.imu and self.connected:
+            print("🔌 Disconnecting from IMU...")
+            self.imu.cleanup()
+            self.connected = False
+            self.imu = None
+            time.sleep(1)  # Give time for cleanup
+    
     def calibrate_gyro_bias(self, duration=30):
         """Calibrate gyroscope bias - table must be perfectly still"""
         if not self.connected:
@@ -169,7 +178,15 @@ class EmbeddedIMUCalibrator:
             print("❌ Insufficient samples")
             return False
         
-        # Calculate level offsets
+        print(f"📊 Collected {len(pitch_samples)} total samples")
+        
+        # Use only the LAST 350 samples to avoid initial zeros
+        if len(pitch_samples) > 350:
+            pitch_samples = pitch_samples[-350:]
+            roll_samples = roll_samples[-350:]
+            print(f"📊 Using last 350 samples for calibration (skipping initial {len(pitch_samples) + len(roll_samples) - 700} samples)")
+        
+        # Calculate level offsets using the filtered samples
         self.level_pitch_offset = np.mean(pitch_samples)
         self.level_roll_offset = np.mean(roll_samples)
         
@@ -213,6 +230,7 @@ class EmbeddedIMUCalibrator:
             while time.time() - start_time < 5:
                 line = self.imu.read_line()
                 if line and line.startswith("DATA:"):
+                        
                     try:
                         data_part = line[6:]
                         heading, pitch, roll = map(float, data_part.split(','))
@@ -340,8 +358,8 @@ class EmbeddedIMUCalibrator:
             print("\n🛑 Calibration cancelled by user")
             return False
         finally:
-            if self.imu:
-                self.imu.cleanup()
+            # Ensure proper cleanup
+            self.disconnect()
 
 def main():
     """Main calibration function"""
@@ -352,7 +370,11 @@ def main():
     args = parser.parse_args()
     
     calibrator = EmbeddedIMUCalibrator(args.port)
-    calibrator.run_full_calibration()
+    try:
+        calibrator.run_full_calibration()
+    finally:
+        # Ensure cleanup even if main fails
+        calibrator.disconnect()
 
 if __name__ == "__main__":
     main()

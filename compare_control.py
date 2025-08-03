@@ -59,8 +59,8 @@ class BallBalanceComparison:
         # Fast stabilization with stronger integral term for better centering
         # Higher integral gain ensures the system cares about being centered, not just stable
         # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
-        self.pitch_pid = PIDController(kp=1.2, ki=0.25, kd=0.08, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=1.2, ki=0.25, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
         
         # Servo controller
         self.servo_controller = None
@@ -928,10 +928,6 @@ class BallBalanceComparison:
                 elif self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                     
-                    # Debug: Show raw PID output before any corrections
-                    if self.step_count % 25 == 0:
-                        print(f"DEBUG: Raw PID Output - Pitch: {pitch_angle:+.4f}, Roll: {roll_angle:+.4f}")
-                    
                     # IMU Feedback Correction (if IMU available and not in IMU control mode)
                     # Re-enabled with conservative gains to help with edge recovery
                     if self.imu_connected and self.imu_calibrated:
@@ -941,20 +937,13 @@ class BallBalanceComparison:
                         # Calculate angle errors (commanded vs actual)
                         pitch_error = pitch_angle - actual_pitch
                         roll_error = roll_angle - actual_roll
-                        
-                        # Debug: Show IMU correction details
-                        if self.step_count % 25 == 0:
-                            print(f"DEBUG: IMU Actual - Pitch: {actual_pitch:+.4f}, Roll: {actual_roll:+.4f}")
-                            print(f"DEBUG: IMU Error - Pitch: {pitch_error:+.4f}, Roll: {roll_error:+.4f}")
+                    
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
                         # More responsive gain to complement PID control and speed up convergence
                         pitch_angle -= 0.1 * pitch_error  # More responsive correction (was 0.05)
                         roll_angle -= 0.1 * roll_error
-                        
-                        # Debug: Show corrected angles
-                        if self.step_count % 25 == 0:
-                            print(f"DEBUG: After IMU Correction - Pitch: {pitch_angle:+.4f}, Roll: {roll_angle:+.4f}")
+                
                         
                         # Store feedback info for display
                         self.imu_feedback_error = (pitch_error, roll_error)
