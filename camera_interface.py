@@ -121,18 +121,20 @@ class RealSenseCameraInterface:
     Intel RealSense camera interface for ball position detection
     """
     
-    def __init__(self, table_size: float = 0.25, camera_height: float = 0.5):
+    def __init__(self, table_size: float = 0.25, camera_height: float = 0.5, disable_rendering: bool = False):
         """
         Initialize RealSense camera interface
         
         Args:
             table_size: Size of the square table in meters (default 25cm)
             camera_height: Height of camera above table in meters
+            disable_rendering: If True, disable camera feed display for performance
         """
         self.table_size = table_size
         self.camera_height = camera_height
         self.platform_height = 0.115  # 11.5cm platform height increase
         self.current_camera_height = 0.36  # 36cm measured distance above platform
+        self.disable_rendering = disable_rendering
         
         # Camera calibration parameters (to be determined during calibration)
         self.camera_matrix = None
@@ -474,9 +476,11 @@ class RealSenseCameraInterface:
                         cv2.putText(color_image, world_text, (10, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     
-                cv2.imshow("Ball Tracking", color_image)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break  # Optionally allow quitting the feed
+                # Only show video feed if rendering is not disabled
+                if not self.disable_rendering:
+                    cv2.imshow("Ball Tracking", color_image)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break  # Optionally allow quitting the feed
                 time.sleep(0.01)  # ~100 Hz capture rate
                 
         except Exception as e:
@@ -532,19 +536,21 @@ class CameraSimulationInterface:
     This allows easy switching between simulation and real camera
     """
     
-    def __init__(self, use_camera: bool = False, table_size: float = 0.25):
+    def __init__(self, use_camera: bool = False, table_size: float = 0.25, disable_rendering: bool = False):
         """
         Initialize the interface
         
         Args:
             use_camera: If True, use real camera. If False, use simulation
             table_size: Table size in meters
+            disable_rendering: If True, disable camera feed display for performance
         """
         self.use_camera = use_camera
         self.table_size = table_size
+        self.disable_rendering = disable_rendering
         
         if use_camera:
-            self.camera = RealSenseCameraInterface(table_size)
+            self.camera = RealSenseCameraInterface(table_size, disable_rendering=disable_rendering)
             if not self.camera.initialize_camera():
                 print("❌ Failed to initialize camera, falling back to simulation mode")
                 self.use_camera = False

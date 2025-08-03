@@ -40,7 +40,7 @@ class BallBalanceComparison:
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False, disable_camera_rendering=False):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
         self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
@@ -48,6 +48,7 @@ class BallBalanceComparison:
         self.enable_imu = enable_imu  # Flag to enable/disable IMU feedback
         self.imu_control = imu_control  # Flag to enable IMU control mode (table follows IMU)
         self.camera_mode = camera_mode  # Camera mode: "simulation", "hybrid", or "real"
+        self.disable_camera_rendering = disable_camera_rendering  # Flag to disable camera feed display for performance
         
         # Timing parameters
         self.physics_freq = 240  # Hz - physics simulation frequency
@@ -113,9 +114,12 @@ class BallBalanceComparison:
         self.camera_interface = None
         use_camera = camera_mode in ["hybrid", "real"] and CAMERA_AVAILABLE
         if use_camera:
-            self.camera_interface = CameraSimulationInterface(use_camera=True, table_size=0.25)
+            self.camera_interface = CameraSimulationInterface(use_camera=True, table_size=0.25, disable_rendering=self.disable_camera_rendering)
             print(f"✅ Camera mode: {camera_mode}")
-            print("📷 Camera interface initialized")
+            if self.disable_camera_rendering:
+                print("📷 Camera interface initialized (rendering disabled for performance)")
+            else:
+                print("📷 Camera interface initialized")
             if camera_mode == "real":
                 print("⚠️ Real camera mode - make sure PyBullet simulation represents actual table")
         elif camera_mode != "simulation":
@@ -1183,6 +1187,8 @@ def main():
                        help="COM port for IMU connection (default: COM6)")
     parser.add_argument("--check-imu", action="store_true",
                        help="Quick check of IMU calibration accuracy (no simulation)")
+    parser.add_argument("--disable-camera-rendering", action="store_true",
+                       help="Disable camera feed display for better performance (keeps ball detection active)")
     args = parser.parse_args()
     
     # Quick IMU calibration check mode
@@ -1214,6 +1220,7 @@ def main():
         camera_mode=args.camera,
         enable_imu=args.imu,
         imu_port=args.imu_port,
+        disable_camera_rendering=args.disable_camera_rendering,
     )
     
     try:
