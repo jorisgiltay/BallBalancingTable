@@ -8,6 +8,7 @@ import os
 import torch
 import threading
 import time
+import subprocess
 from ball_balance_env import BallBalanceEnv
 
 
@@ -82,8 +83,44 @@ class RenderToggleCallback(BaseCallback):
         return True
 
 
-def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50):
+def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50, start_tensorboard=False):
     """Train a reinforcement learning agent for ball balancing"""
+    
+    # Create directories first
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("tensorboard_logs", exist_ok=True)
+    os.makedirs("checkpoints", exist_ok=True)
+    
+    # Start TensorBoard automatically if requested
+    tensorboard_process = None
+    if start_tensorboard:
+        import subprocess
+        import webbrowser
+        try:
+            print("🚀 Starting TensorBoard...")
+            tensorboard_process = subprocess.Popen([
+                "tensorboard", 
+                "--logdir=./tensorboard_logs/", 
+                "--port=6006",
+                "--host=localhost"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            # Give TensorBoard a moment to start
+            time.sleep(2)
+            
+            # Try to open browser automatically
+            try:
+                webbrowser.open("http://localhost:6006")
+                print("📊 TensorBoard started at http://localhost:6006 (opened in browser)")
+            except:
+                print("📊 TensorBoard started at http://localhost:6006")
+                
+        except FileNotFoundError:
+            print("⚠️ TensorBoard not found. Install with: pip install tensorboard")
+            print("📊 You can still monitor logs manually: tensorboard --logdir=./tensorboard_logs/")
+        except Exception as e:
+            print(f"⚠️ Failed to start TensorBoard automatically: {e}")
+            print("📊 You can start it manually: tensorboard --logdir=./tensorboard_logs/")
     
     # Create environment with optional rendering and specified control frequency
     if render_training:
@@ -170,22 +207,27 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     callbacks.append(eval_callback)
     
-    # Create models directory
-    os.makedirs("models", exist_ok=True)
-    os.makedirs("tensorboard_logs", exist_ok=True)
-    os.makedirs("checkpoints", exist_ok=True)
-    
     print("Starting training...")
-    print("📊 Monitor training: tensorboard --logdir=./tensorboard_logs/")
+    if not start_tensorboard:
+        print("📊 Monitor training: tensorboard --logdir=./tensorboard_logs/")
     print("💾 Checkpoints saved every 10k steps to ./checkpoints/")
     print("🏆 Best models saved to ./models/")
     
     # Train the model - increased timesteps since agent was just starting to improve at 150k
-    model.learn(
-        total_timesteps=500000,  # Back to 500k - agent needs more time to fully converge
-        callback=callbacks,
-        progress_bar=True
-    )
+    try:
+        model.learn(
+            total_timesteps=500000,  # Back to 500k - agent needs more time to fully converge
+            callback=callbacks,
+            progress_bar=True
+        )
+    finally:
+        # Clean up TensorBoard process if it was started
+        if tensorboard_process:
+            try:
+                tensorboard_process.terminate()
+                print("🛑 TensorBoard stopped")
+            except:
+                pass
     
     # Save the final model
     model.save("models/ball_balance_ppo_final")
@@ -242,6 +284,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")
     parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")
     parser.add_argument("--freq", type=int, default=60, help="Control frequency in Hz (default: 60)")
+    parser.add_argument("--tensorboard", action="store_true", help="Automatically start TensorBoard during training")
     
     args = parser.parse_args()
     
@@ -264,7 +307,8 @@ if __name__ == "__main__":
         else:
             train_rl_agent(use_early_stopping=not args.no_early_stop, 
                           render_training=render_training, 
-                          control_freq=args.freq)
+                          control_freq=args.freq,
+                          start_tensorboard=args.tensorboard)
     elif args.mode == "recover":
         from recovery_tool import rollback_to_checkpoint
         rollback_to_checkpoint()
