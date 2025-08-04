@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from ball_balance_env import BallBalanceEnv
+from reinforcement_learning.ball_balance_env import BallBalanceEnv
 import time
 
 

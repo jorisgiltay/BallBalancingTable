@@ -86,7 +86,7 @@ class RenderToggleCallback(BaseCallback):
 def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50, start_tensorboard=False):
     """Train a reinforcement learning agent for ball balancing"""
     
-    # Create directories first
+    # Create directories first (in local reinforcement_learning directory)
     os.makedirs("models", exist_ok=True)
     os.makedirs("tensorboard_logs", exist_ok=True)
     os.makedirs("checkpoints", exist_ok=True)
@@ -230,8 +230,8 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
                 pass
     
     # Save the final model
-    model.save("models/ball_balance_ppo_final")
-    print("Training completed! Model saved to models/ball_balance_ppo_final.zip")
+    model.save("./models/ball_balance_ppo_final")
+    print("Training completed! Model saved to ./models/ball_balance_ppo_final.zip")
     
     env.close()
     eval_env.close()
@@ -239,7 +239,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     return model
 
 
-def test_trained_agent(model_path="models/ball_balance_ppo_final", control_freq=50):
+def test_trained_agent(model_path="./models/ball_balance_ppo_final", control_freq=50):
     """Test a trained agent"""
     
     # Load the model
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Train or test RL agent for ball balancing")
     parser.add_argument("--mode", choices=["train", "test", "recover"], default="train", help="Train, test, or recover from checkpoint")
-    parser.add_argument("--model", default="models/ball_balance_ppo_final", help="Path to model for testing")
+    parser.add_argument("--model", default="./models/ball_balance_ppo_final", help="Path to model for testing")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable early stopping during training")
     parser.add_argument("--resume-from", type=str, help="Resume training from specific checkpoint")
     parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")

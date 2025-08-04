@@ -752,7 +752,8 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                "models/best_model"
+                "models/best_model",  # Check main models folder first (for backward compatibility)
+                "reinforcement_learning/models/best_model"  # New location
             ]
             
             for model_path in model_paths:
@@ -770,12 +771,14 @@ class BallBalanceComparison:
                     print(f"❌ Model file not found: {full_path}")
             
             # If we get here, no model was loaded
-            print("❌ No RL models found. Available files in models/:")
-            if os.path.exists("models"):
-                for file in os.listdir("models"):
-                    print(f"   - {file}")
-            else:
-                print("   - models/ directory doesn't exist")
+            print("❌ No RL models found. Checked locations:")
+            for path in ["models/", "reinforcement_learning/models/"]:
+                if os.path.exists(path):
+                    print(f"   📁 {path}:")
+                    for file in os.listdir(path):
+                        print(f"      - {file}")
+                else:
+                    print(f"   📁 {path}: directory doesn't exist")
             
             print("Switching to PID control.")
             self.control_method = "pid"

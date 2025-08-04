@@ -2,7 +2,7 @@ import os
 import glob
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
-from ball_balance_env import BallBalanceEnv
+from reinforcement_learning.ball_balance_env import BallBalanceEnv
 
 
 def find_best_checkpoint():
