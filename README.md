@@ -148,7 +148,7 @@ python compare_control.py --control rl --freq 100 --visuals
 ![Servos](media/servos.jpeg)
 *Dynamixel servo configuration with mounting hardware*
 
-![Yaw Constraint Slider](media/yaw_constraint_slider.jpeg)
+![Yaw Constraint Slider](media/yaw_constraint.jpeg)
 *Mechanical constraint system for controlled platform movement*
 
 ### Calibration Requirements
