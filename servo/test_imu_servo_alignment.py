@@ -20,7 +20,7 @@ except ImportError:
     print("⚠️ IMU interface not available")
 
 try:
-    from servo_controller import ServoController
+    from servo.servo_controller import ServoController
     SERVO_AVAILABLE = True
 except ImportError:
     SERVO_AVAILABLE = False

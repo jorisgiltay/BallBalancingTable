@@ -18,7 +18,7 @@ Usage:
 import argparse
 import time
 import numpy as np
-from camera_interface import CameraSimulationInterface
+from camera.camera_interface import CameraSimulationInterface
 from pid_controller import PIDController
 
 # Import PyBullet for simulation compatibility

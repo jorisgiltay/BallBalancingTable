@@ -10,7 +10,7 @@ import queue
 
 # Optional servo control
 try:
-    from servo_controller import ServoController
+    from servo.servo_controller import ServoController
     SERVO_AVAILABLE = True
 except ImportError:
     SERVO_AVAILABLE = False
@@ -18,7 +18,7 @@ except ImportError:
 
 # Optional camera integration
 try:
-    from camera_interface import CameraSimulationInterface
+    from camera.camera_interface import CameraSimulationInterface
     CAMERA_AVAILABLE = True
 except ImportError:
     CAMERA_AVAILABLE = False
@@ -269,7 +269,7 @@ class BallBalanceComparison:
             
             # Try to import the calibration module
             try:
-                from camera_calibration_color import ColorCalibrationTest
+                from camera.camera_calibration_color import ColorCalibrationTest
             except ImportError as e:
                 print(f"❌ Could not import calibration module: {e}")
                 return False
