@@ -241,7 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume-from", type=str, help="Resume training from specific checkpoint")
     parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")
     parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")
-    parser.add_argument("--freq", type=int, default=50, help="Control frequency in Hz (default: 50)")
+    parser.add_argument("--freq", type=int, default=60, help="Control frequency in Hz (default: 60)")
     
     args = parser.parse_args()
     
