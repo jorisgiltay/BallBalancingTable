@@ -25,7 +25,7 @@ A complete ball balancing control system with **simulation**, **camera integrati
 ![Hybrid Mode Demo](media/hybrid_mode.gif)
 *Real-time hybrid mode: camera tracking with simulation physics*
 
-![Disturbance Handling](media/Disturbance.mp4)
+![Disturbance Handling](media/Disturbance.gif)
 *Robust control response to external disturbances*
 
 ### Visual Dashboard
@@ -36,7 +36,7 @@ A complete ball balancing control system with **simulation**, **camera integrati
 ![PID Control Dashboard](media/matplotlib_PID.png)
 *Real-time PID controller dashboard with performance metrics*
 
-![PID Control Demo](media/PID.mp4)
+![PID Control Demo](media/PID.gif)
 *PID control demonstration showing stable ball positioning*
 
 ![RL Control Dashboard](media/matplotlib_RL.png)
