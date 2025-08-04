@@ -372,7 +372,7 @@ python compare_control.py --camera hybrid --control rl --visuals
 ### 4. Hardware Deployment
 ```bash
 # Deploy to real hardware
-python compare_control.py --camera real --servos --calibrate
+python compare_control.py --freq 60 --camera real --servos --imu --imu-port <DEVICE_NAME>
 ```
 
 ## 💡 Tips & Development Notes
