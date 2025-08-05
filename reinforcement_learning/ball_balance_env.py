@@ -426,121 +426,106 @@ class BallBalanceEnv(gym.Env):
     
     def _calculate_reward(self, observation, action):
         ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation
-        
-        # Distance from center
         distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-        
-        # FIXED REWARD FUNCTION - position must dominate!
-        
-        # 1. Primary goal: Keep ball at center (MUCH STRONGER)
-        # Make position reward the dominant component
-        position_reward = max(0.0, 3.0 - distance_from_center / 0.1)  # Much stronger, drops faster
-        
-        # 2. Penalty for ball falling off
+
         if distance_from_center > self.table_size:
-            return -10.0
-        
-        # 3. Time bonus - reward for staying on table longer
-        time_bonus = 0.1  # Small constant bonus for each step ball stays on table
-        
-        # 4. Control energy function - but ONLY when ball is reasonably well controlled
-        control_energy_reward = 0.0
-        if distance_from_center < 0.10:  # Only reward good control when ball is well within table bounds
-            # Calculate what the optimal action SHOULD be based on ball state
-            optimal_action = self._calculate_optimal_action(ball_x, ball_y, ball_vx, ball_vy)
-            
-            # Measure how close the agent's action is to the optimal action
-            action_error = np.linalg.norm(action - optimal_action)
-            
-            # Reward inverse of error - closer to optimal = higher reward (but smaller max)
-            control_energy_reward = max(0.0, 0.3 - action_error * 3.0)  # Reduced max reward
-        
-        # 5. Smart velocity penalty (context-dependent)
-        velocity_magnitude = np.sqrt(ball_vx**2 + ball_vy**2)
-        if distance_from_center < 0.05:  # Ball is close to center
-            # When centered, we want it stationary
-            velocity_penalty = -velocity_magnitude * 1.0  # Penalize movement when centered
+            return -10.0  # Fail case
+
+        # === 1. Position reward (normalized: max ~ +4.0) ===
+        position_reward = max(0.0, 4.0 * (1.0 - (distance_from_center / self.table_size)))
+
+        # === 2. Time bonus (small constant) ===
+        time_bonus = 0.1  # Increased from 0.05 to enhance survival incentive
+
+        # === 3. Action penalty (softer, quadratic) ===
+        action_magnitude = np.linalg.norm(action)
+        action_penalty = -10.0 * action_magnitude**2  # Down from -20
+
+        # Soft limit penalty
+        if np.any(np.abs(action) > 0.045):
+            action_penalty += -1.0  # Reduced from -2
+
+        # === 4. Bang-bang streak penalty (smoothed) ===
+        if not hasattr(self, 'max_action_streak'):
+            self.max_action_streak = 0
+        if np.any(np.abs(action) > 0.048):
+            self.max_action_streak += 1
         else:
-            # When off-center, don't penalize movement (we want it to move toward center)
-            velocity_penalty = 0.0
-        
-        # 6. Penalty for extreme table angles (discourages big tilts for circular motion)
-        table_angle_magnitude = np.sqrt(table_pitch**2 + table_roll**2)
-        table_penalty = -table_angle_magnitude * 3.0  # Penalize large table tilts
-        
-        # 7. Penalty for action oscillation AND circular patterns
+            self.max_action_streak = 0
+
+        if self.max_action_streak >= 3:
+            action_penalty += -2.0 - 1.0 * (self.max_action_streak - 3)  # Smoothed penalty instead of cliff
+
+        # === 5. Oscillation / circular motion penalty ===
         oscillation_penalty = 0.0
-        if len(self.prev_actions) >= 6:  # Need more actions to detect circular patterns
-            # Check for alternating pattern over last 4 actions (bang-bang detection)
-            recent_actions = self.prev_actions[-4:] + [action]  # Last 4 + current = 5 actions
-            
-            # Look for alternating signs in each action component with LARGE magnitudes
-            # Only penalize if the oscillations are also large (bang-bang style)
-            pitch_large = [np.sign(a[0]) for a in recent_actions if abs(a[0]) > 0.025]  # Only large actions
-            roll_large = [np.sign(a[1]) for a in recent_actions if abs(a[1]) > 0.025]   # Only large actions
-            
-            # Check if we have alternating signs (oscillation pattern)
+        if len(self.prev_actions) >= 6:
+            recent_actions = self.prev_actions[-6:] + [action]
+            pitch_signs = [np.sign(a[0]) for a in recent_actions if abs(a[0]) > 0.03]
+            roll_signs = [np.sign(a[1]) for a in recent_actions if abs(a[1]) > 0.03]
+
             def is_alternating(signs):
-                if len(signs) < 3:
+                if len(signs) < 4:
                     return False
-                alternations = 0
-                for i in range(1, len(signs)):
-                    if signs[i] != signs[i-1]:
-                        alternations += 1
-                return alternations >= 2  # At least 2 sign changes = oscillation
-            
-            # Only penalize if LARGE actions are oscillating (bang-bang)
-            if is_alternating(pitch_large) or is_alternating(roll_large):
-                oscillation_penalty += -0.5  # Penalty for large oscillations
-                
-            # NEW: Detect circular/orbital motion patterns
-            longer_actions = self.prev_actions[-6:] + [action]  # Last 6 + current = 7 actions
-            if len(longer_actions) >= 6:
-                # Calculate action magnitudes - circular motion uses consistently large actions
-                action_mags = [np.linalg.norm(a) for a in longer_actions]
-                avg_magnitude = np.mean(action_mags)
-                
-                # Check if actions are consistently large (indicating orbital motion)
-                if avg_magnitude > 0.02:  # Actions are substantial
-                    # Check if we're doing circular motion by looking at action direction changes
-                    angles = []
-                    for a in longer_actions:
-                        if np.linalg.norm(a) > 0.01:  # Only consider significant actions
-                            angle = np.arctan2(a[1], a[0])  # Angle of action vector
-                            angles.append(angle)
-                    
-                    if len(angles) >= 5:
-                        # Check for smooth directional progression (circular motion)
-                        angle_diffs = []
-                        for i in range(1, len(angles)):
-                            diff = angles[i] - angles[i-1]
-                            # Normalize angle difference to [-pi, pi]
-                            while diff > np.pi:
-                                diff -= 2*np.pi
-                            while diff < -np.pi:
-                                diff += 2*np.pi
-                            angle_diffs.append(abs(diff))
-                        
-                        # If angle changes are consistent and moderate, it's circular motion
-                        avg_angle_change = np.mean(angle_diffs)
-                        if 0.3 < avg_angle_change < 2.0:  # Consistent moderate turning
-                            oscillation_penalty += -0.8  # Strong penalty for circular motion
-                
-        # Also penalize if current action is roughly opposite to previous (immediate detection)
-        # But only if both actions are reasonably large
-        if self.prev_action is not None:
-            if (np.linalg.norm(action) > 0.02 and np.linalg.norm(self.prev_action) > 0.02):
-                action_dot_product = np.dot(action, self.prev_action)
-                if action_dot_product < -0.001:  # Actions are opposite
-                    oscillation_penalty += -0.3  # Small additional penalty
-        
-        # Update previous action for future use
+                return sum(signs[i] != signs[i-1] for i in range(1, len(signs))) >= 3
+
+            if is_alternating(pitch_signs) or is_alternating(roll_signs):
+                oscillation_penalty += -1.0  # Reduced from -2
+
+            mags = [np.linalg.norm(a) for a in recent_actions]
+            if np.mean(mags) > 0.03:
+                angles = [np.arctan2(a[1], a[0]) for a in recent_actions if np.linalg.norm(a) > 0.01]
+                if len(angles) >= 5:
+                    diffs = [abs(angles[i] - angles[i-1]) for i in range(1, len(angles))]
+                    avg_diff = np.mean(diffs)
+                    if 0.3 < avg_diff < 2.0:
+                        oscillation_penalty += -1.5  # Reduced from -3
+
+        # === 6. Smoothness bonus (kept as-is) ===
+        if not hasattr(self, 'small_action_streak'):
+            self.small_action_streak = 0
+        if action_magnitude < 0.012:
+            self.small_action_streak += 1
+        else:
+            self.small_action_streak = 0
+
+        smoothness_bonus = 0.0
+        if self.small_action_streak >= 8:
+            smoothness_bonus = 2.0  # Slightly reduced from 3.0
+
+        # === 7. Prolonged table angle penalty (softened) ===
+        table_angle = np.sqrt(table_pitch**2 + table_roll**2)
+        if not hasattr(self, 'table_angle_history'):
+            self.table_angle_history = []
+        self.table_angle_history.append(table_angle)
+        if len(self.table_angle_history) > 8:
+            self.table_angle_history.pop(0)
+
+        avg_table_angle = np.mean(self.table_angle_history)
+        prolonged_angle_penalty = -2.0 * avg_table_angle  # Reduced from -3.0
+
+        # === 8. Optimality penalty ===
+        optimal_action = self._calculate_optimal_action(ball_x, ball_y, ball_vx, ball_vy)
+        optimality_penalty = -5.0 * np.linalg.norm(action - optimal_action)  # Weight controls impact
+
+        # === Final Reward ===
+        total_reward = (
+            position_reward +
+            time_bonus +
+            action_penalty +
+            oscillation_penalty +
+            smoothness_bonus +
+            prolonged_angle_penalty +
+            optimality_penalty  
+        )
+
+        # === Normalize to [-10, 10] ===
+        total_reward = np.clip(total_reward, -10.0, 10.0)
+
+        # Update prev action
         self.prev_action = action.copy()
-        
-        # Position-dominated combination - position reward is now 10x more important
-        total_reward = position_reward + time_bonus + control_energy_reward + velocity_penalty + table_penalty + oscillation_penalty
-        
+
         return total_reward
+
     
     def _calculate_optimal_action(self, ball_x, ball_y, ball_vx, ball_vy):
         """Calculate the theoretically optimal action for current ball state"""
@@ -548,7 +533,7 @@ class BallBalanceEnv(gym.Env):
         
         # Proportional gains (how much to tilt based on position error)
         kp = 0.8  # Position gain
-        kd = 0.3  # Velocity (derivative) gain
+        kd = 0.08  # Velocity (derivative) gain
         
         # Calculate desired table tilts to center the ball
         # Tilt table opposite to ball position to "roll" ball toward center
@@ -556,8 +541,8 @@ class BallBalanceEnv(gym.Env):
         desired_roll = -ball_y * kp - ball_vy * kd
         
         # Clip to action space limits
-        desired_pitch = np.clip(desired_pitch, -0.05, 0.05)
-        desired_roll = np.clip(desired_roll, -0.05, 0.05)
+        desired_pitch = np.clip(desired_pitch, -0.0524, 0.0524)
+        desired_roll = np.clip(desired_roll, -0.0524, 0.0524)
         
         return np.array([desired_pitch, desired_roll], dtype=np.float32)
     

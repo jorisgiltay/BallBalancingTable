@@ -3,6 +3,7 @@ import pybullet_data
 import time
 import numpy as np
 from pid_controller import PIDController
+from lqr_controller import LQRController
 import argparse
 import os
 import threading
@@ -64,6 +65,9 @@ class BallBalanceComparison:
         #WITHOUT CAMERA RENDERING DELAY GAINS: 
         self.pitch_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
         self.roll_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
+
+        # inside your class __init__
+        self.lqr_controller = LQRController()
 
         #WITH CAMERA RENDERING DELAY GAINS:
         # self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
@@ -451,13 +455,13 @@ class BallBalanceComparison:
                 ]
                 print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
             else:
-                position = [0.06, 0.08, 0.5]
+                position = [-0.1, 0.00, 0.5]
                 print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
         
         # 🛡️ Ensure minimum height above the table to avoid bad spawns
         if position[2] < 0.2:
             print(f"Ball Z too low ({position[2]:.2f}), adjusting to safe height.")
-            position[2] = 0.5  # safe above-table height
+            position[2] = 0.3  # safe above-table height
 
         if hasattr(self, 'ball_id'):
             p.removeBody(self.ball_id)
@@ -572,7 +576,10 @@ class BallBalanceComparison:
                 ball_marker.set_data([data['ball_x']], [data['ball_y']])
                 
                 # Update combined bars (actions and angles) - only if changed significantly
-                heights = [data['action'][0], data['action'][1], data['pitch'], data['roll']]
+                if data['imu']['connected']:
+                    heights = [data['action'][0], data['action'][1], np.radians(data['imu']['pitch']), np.radians(data['imu']['roll'])]
+                else:
+                    heights = [data['action'][0], data['action'][1], data['pitch'], data['roll']]
                 for i, (bar, height) in enumerate(zip(combined_bars, heights)):
                     bar.set_height(height)
                     
@@ -979,12 +986,13 @@ class BallBalanceComparison:
     def load_rl_model(self):
         """Load trained RL model"""
         try:
-            from stable_baselines3 import PPO
+            from stable_baselines3 import SAC
             
             # Try multiple model paths
             model_paths = [
-                "models/best_model",  # Check main models folder first (for backward compatibility)
+                #"models/best_model",  # Check main models folder first (for backward compatibility)
                 "reinforcement_learning/models/best_model"  # New location
+                #"reinforcement_learning/SAC_models/best_model"  # Alternative path
             ]
             
             for model_path in model_paths:
@@ -992,7 +1000,7 @@ class BallBalanceComparison:
                 print(f"Checking for model at: {full_path}")
                 if os.path.exists(full_path):
                     try:
-                        self.rl_model = PPO.load(model_path)
+                        self.rl_model = SAC.load(model_path)
                         print(f"✅ RL model loaded successfully from {model_path}")
                         return
                     except Exception as e:
@@ -1085,6 +1093,9 @@ class BallBalanceComparison:
             pitch_angle = -self.pitch_pid.update(ball_y_corrected, self.control_dt)  # ball_y controls pitch
             roll_angle = self.roll_pid.update(ball_x_corrected, self.control_dt)     # ball_x controls roll
         
+        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+            print(pitch_angle, roll_angle)
+
         return pitch_angle, roll_angle
     
     def rl_control(self, observation):
@@ -1094,9 +1105,13 @@ class BallBalanceComparison:
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
         # Only print RL actions occasionally to avoid spam
-        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
-            print(f"RL action: {action}")
-        return action[0], action[1]  # pitch_change, roll_change
+        # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+        print(f"RL action: {action}")
+        if self.camera_mode in ["hybrid", "real"]:
+            action = [-action[1], -action[0]]
+        else:
+            action = action[0], action[1]  # Reverse order for simulation
+        return action  # pitch_change, roll_change
     
     def run_simulation(self):
         """Main simulation loop with configurable control rate"""
@@ -1180,6 +1195,12 @@ class BallBalanceComparison:
                         self.table_pitch = 0.0
                         self.table_roll = 0.0
                         control_action = [0.0, 0.0]
+                elif self.control_method == "lqr":
+                    pitch_angle, roll_angle = self.lqr_controller.control(ball_x, ball_y, ball_vx, ball_vy)
+                    # For LQR, these are absolute angles
+                    self.table_pitch = pitch_angle
+                    self.table_roll = roll_angle
+                    control_action = [pitch_angle, roll_angle]
                 elif self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                     
@@ -1239,6 +1260,9 @@ class BallBalanceComparison:
                         # Use corrected angles
                         self.table_pitch = corrected_pitch
                         self.table_roll = corrected_roll
+
+                        self.table_pitch = new_table_pitch
+                        self.table_roll = new_table_roll
                     else:
                         # No IMU feedback - use RL action directly
                         self.table_pitch = new_table_pitch
@@ -1438,7 +1462,7 @@ class BallBalanceComparison:
 
 def main():
     parser = argparse.ArgumentParser(description="Ball Balancing Control Comparison")
-    parser.add_argument("--control", choices=["pid", "rl"], default="pid", 
+    parser.add_argument("--control", choices=["pid", "rl","lqr"], default="pid", 
                        help="Control method to start with")
     parser.add_argument("--freq", type=int, default=50,
                        help="Control frequency in Hz (default: 50)")
