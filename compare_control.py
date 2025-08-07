@@ -52,6 +52,8 @@ class BallBalanceComparison:
         self.disable_camera_rendering = disable_camera_rendering  # Flag to disable camera feed display for performance
         self.setpoint_x = 0.0
         self.setpoint_y = 0.0
+        self._circle_mode = False
+        self._circle_angle = 0.0
         
         # Timing parameters
         self.physics_freq = 240  # Hz - physics simulation frequency
@@ -1187,23 +1189,46 @@ class BallBalanceComparison:
         
         physics_step_count = 0  # Track physics steps
 
+        # Keyboard callback to toggle circle mode (e.g., on 'c' key release)
+        def on_i_release(e):
+            self._circle_mode = not self._circle_mode  # Toggle on/off
+
+        
 
         def on_w_release(e):
-            self.setpoint_y += 0.01
+            self.setpoint_y += 0.05
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_s_release(e):
-            self.setpoint_y -= 0.01
+            self.setpoint_y -= 0.05
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_a_release(e):
-            self.setpoint_x -= 0.01
+            self.setpoint_x -= 0.05
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_d_release(e):
-            self.setpoint_x += 0.01
+            self.setpoint_x += 0.05
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
+        def on_1_release(e):
+            self.set_setpoint(-0.07, 0.07)
+
+        def on_2_release(e):
+            self.set_setpoint(0.07, 0.07)
+
+        def on_3_release(e):
+            self.set_setpoint(0.07, -0.07)
+
+        def on_4_release(e):
+            self.set_setpoint(-0.07, -0.07)
+
+        keyboard.on_release_key('1', on_1_release)
+        keyboard.on_release_key('2', on_2_release)
+        keyboard.on_release_key('3', on_3_release)
+        keyboard.on_release_key('4', on_4_release)
+
+        keyboard.on_release_key('i', on_i_release)
         keyboard.on_release_key('w', on_w_release)
         keyboard.on_release_key('s', on_s_release)
         keyboard.on_release_key('a', on_a_release)
@@ -1372,6 +1397,14 @@ class BallBalanceComparison:
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
                 ball_fell = distance_from_center > 0.125 and ball_z < 0.5
+
+                if self._circle_mode:
+                    # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
+                    self._circle_angle += 2 * np.pi / 90
+                    radius = 0.08  # or whatever radius you want
+                    self.setpoint_x = radius * np.cos(self._circle_angle)
+                    self.setpoint_y = radius * np.sin(self._circle_angle)
+                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
                 if ball_fell and not self._ball_reset:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")

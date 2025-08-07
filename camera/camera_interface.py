@@ -508,10 +508,10 @@ class RealSenseCameraInterface:
                     marker_corners_int = marker_corners_rect.astype(np.int32)
                     cv2.polylines(color_image, [marker_corners_int], True, (0, 255, 255), 1)  # Yellow, thin line
 
-                    x_min = int(np.min(corners_rect[:, 0])) - 10 # Add 5px padding
-                    y_min = int(np.min(corners_rect[:, 1])) - 10 # Add 5px padding
-                    x_max = int(np.max(corners_rect[:, 0])) + 10 # Add 5px padding
-                    y_max = int(np.max(corners_rect[:, 1])) + 10 # Add 5px padding
+                    x_min = int(np.min(corners_rect[:, 0])) + 10 # Add 5px padding
+                    y_min = int(np.min(corners_rect[:, 1])) + 10 # Add 5px padding
+                    x_max = int(np.max(corners_rect[:, 0])) - 10 # Add 5px padding
+                    y_max = int(np.max(corners_rect[:, 1])) - 10 # Add 5px padding
                     crop_tuple = (x_min, y_min, x_max - x_min, y_max - y_min)
 
                     ball_position = self.ball_detector.detect_ball(color_image, depth_image, crop=crop_tuple)
