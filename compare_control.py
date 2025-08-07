@@ -28,8 +28,7 @@ except ImportError:
 # Optional IMU feedback
 try:
     import sys
-    sys.path.append('imu')
-    from imu_simple import SimpleBNO055Interface
+    from imu.imu_simple import SimpleBNO055Interface
     IMU_AVAILABLE = True
 except ImportError:
     IMU_AVAILABLE = False
@@ -60,18 +59,18 @@ class BallBalanceComparison:
         # PID controllers (create these BEFORE setup_simulation)
         # Fast stabilization with stronger integral term for better centering
         # Higher integral gain ensures the system cares about being centered, not just stable
-        # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
+        # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.1920 rad
 
         #WITHOUT CAMERA RENDERING DELAY GAINS: 
-        self.pitch_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
+        self.pitch_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.1920, 0.1920))
+        self.roll_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.1920, 0.1920))
 
         # inside your class __init__
         self.lqr_controller = LQRController()
 
         #WITH CAMERA RENDERING DELAY GAINS:
-        # self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
-        # self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
+        # self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.1920, 0.1920))
+        # self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.1920, 0.1920))
 
         # 🔧 SERVO UNCERTAINTY MODEL - Realistic XL430-250T servo behavior
         # Parameters tuned for Dynamixel XL430-250T servos (high-quality, 60Hz update rate)
@@ -88,7 +87,7 @@ class BallBalanceComparison:
             'position_noise_std': 0.02,  # 0.02° standard deviation (high-quality servo)
             
             # Saturation effects - XL430 has smooth response curves
-            'saturation_softness': 0.9,  # Very gradual saturation (quality servo)
+            'saturation_softness': 0.0,  # Very gradual saturation (quality servo, set to 0 cause it creates too much noise)
             
             # Hysteresis - minimal for XL430 due to quality gears
             'hysteresis_strength': 0.01,  # 0.01° hysteresis effect (very low)
@@ -545,7 +544,7 @@ class BallBalanceComparison:
         # Control effort and angles combined
         ax_control = fig.add_subplot(gs[1, :])
         ax_control.set_title('Control Actions & Table Angles', fontweight='bold')
-        ax_control.set_ylim(-0.06, 0.06)
+        ax_control.set_ylim(-0.2, 0.2)
         
         # Combined bars for actions and angles
         x_pos = np.arange(4)
@@ -939,7 +938,7 @@ class BallBalanceComparison:
         )
         
         # 4. SATURATION EFFECTS - Non-linear response near limits
-        servo_limit = 0.0559  # ±3.2° servo limit
+        servo_limit = 0.1920  # ±3.2° servo limit
         softness = self.servo_uncertainty['saturation_softness']
         
         def soft_saturation(angle, limit, softness):
@@ -1225,8 +1224,8 @@ class BallBalanceComparison:
                         self.imu_feedback_error = (pitch_error, roll_error)
                     
                     # Ensure final angles stay within servo limits after IMU correction
-                    pitch_angle = np.clip(pitch_angle, -0.0559, 0.0559)  # ±3.2°
-                    roll_angle = np.clip(roll_angle, -0.0559, 0.0559)   # ±3.2°
+                    pitch_angle = np.clip(pitch_angle, -0.1920, 0.1920)  # ±3.2°
+                    roll_angle = np.clip(roll_angle, -0.1920, 0.1920)   # ±3.2°
                 
                     
                     # For PID, these are absolute angles
