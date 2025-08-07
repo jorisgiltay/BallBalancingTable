@@ -38,7 +38,6 @@ class BallDetector:
         # These values are tuned for better stationary ball detection
         self.lower_white = np.array([0, 0, 180])    # Lower brightness threshold
         self.upper_white = np.array([180, 50, 255]) # Higher saturation tolerance
-        
         # Alternative: Orange ball detection (uncomment if using orange ball)
         # self.lower_orange = np.array([10, 100, 100])
         # self.upper_orange = np.array([25, 255, 255])
@@ -135,6 +134,8 @@ class RealSenseCameraInterface:
         self.platform_height = 0.115  # 11.5cm platform height increase
         self.current_camera_height = 0.36  # 36cm measured distance above platform
         self.disable_rendering = disable_rendering
+        self.target_x = 0.0
+        self.target_y = 0.0
         
         # Camera calibration parameters (to be determined during calibration)
         self.camera_matrix = None
@@ -328,16 +329,78 @@ class RealSenseCameraInterface:
             
             # Empirically determined correction factor - accounts for all real-world factors
             # including lens distortion, marker placement errors, and height effects
-            COORDINATE_CORRECTION = 0.9  # Tuned to match actual table dimensions
-            world_x *= COORDINATE_CORRECTION
-            world_y *= COORDINATE_CORRECTION
-            
+            COORDINATE_CORRECTION = 0.88  # Tuned to match actual table dimensions
+            world_x *= 0.85
+            world_y *= 0.82
+
+            # Always shift X to the left by up to 0.05 at the edges (linearly)
+            max_shift = 0.005
+            half = self.table_size / 2
+            world_x = world_x - max_shift * (abs(world_x) / half)
+
             # Invert Y coordinate to match simulation coordinate system
             world_y = -world_y
+
             
             return world_x, world_y
         except Exception as e:
             print(f"❌ Coordinate transformation error: {e}")
+            return 0.0, 0.0
+        
+    def world_to_pixel_coordinates(self, world_x: float, world_y: float) -> Tuple[float, float]:
+        """
+        Convert world coordinates (in meters relative to table center) to pixel coordinates.
+
+        Args:
+            world_x: X coordinate in world space (meters)
+            world_y: Y coordinate in world space (meters)
+
+        Returns:
+            Tuple of (pixel_x, pixel_y)
+        """
+        # Check for valid world coordinates
+        if not (np.isfinite(world_x) and np.isfinite(world_y)):
+            print(f"❌ Invalid world coordinates: ({world_x}, {world_y})")
+            return 0.0, 0.0
+
+        # Robust check for calibration data
+        if (
+            self.table_corners_pixels is None or
+            not isinstance(self.table_corners_pixels, np.ndarray) or
+            self.table_corners_pixels.shape != (4, 2) or
+            self.table_corners_pixels.dtype != np.float32
+        ):
+            print(f"❌ Table not calibrated or invalid shape: {self.table_corners_pixels}")
+            # Fallback: simple linear mapping (not accurate)
+            pixel_x = world_x / (self.table_size / 2) * 320 + 320
+            pixel_y = world_y / (self.table_size / 2) * 240 + 240
+            return pixel_x, pixel_y
+
+        try:
+            # Reverse the correction and Y inversion
+            COORDINATE_CORRECTION = 0.88
+            world_x /= COORDINATE_CORRECTION
+            world_y = -world_y / COORDINATE_CORRECTION
+
+            # Create 1x1x2 array of world point
+            world_point = np.array([[world_x, world_y]], dtype=np.float32).reshape(1, 1, 2)
+
+            # Ensure arrays are contiguous np.float32
+            table_corners_pixels = np.ascontiguousarray(self.table_corners_pixels, dtype=np.float32)
+            world_corners = np.ascontiguousarray(self.table_corners_world[:, :2], dtype=np.float32)
+
+            # Compute inverse transform matrix (world → pixel)
+            M_inv = cv2.getPerspectiveTransform(world_corners, table_corners_pixels)
+
+            # Apply the transformation
+            pixel_point = cv2.perspectiveTransform(world_point, M_inv)
+
+            pixel_x = float(pixel_point[0, 0, 0])
+            pixel_y = float(pixel_point[0, 0, 1])
+
+            return pixel_x, pixel_y
+        except Exception as e:
+            print(f"❌ Coordinate inverse transformation error: {e}")
             return 0.0, 0.0
     
     def start_continuous_capture(self):
@@ -349,6 +412,11 @@ class RealSenseCameraInterface:
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
         print("✅ Started continuous ball tracking")
+
+    def set_target(self, x: float, y: float):
+        self.target_x = x
+        self.target_y = y
+        print(f"🎯 Target position set to: ({x:.3f}, {y:.3f})")
     
     def stop_continuous_capture(self):
         """Stop continuous capture"""
@@ -440,14 +508,20 @@ class RealSenseCameraInterface:
                     marker_corners_int = marker_corners_rect.astype(np.int32)
                     cv2.polylines(color_image, [marker_corners_int], True, (0, 255, 255), 1)  # Yellow, thin line
 
-                    x_min = int(np.min(corners_rect[:, 0]))
-                    y_min = int(np.min(corners_rect[:, 1]))
-                    x_max = int(np.max(corners_rect[:, 0]))
-                    y_max = int(np.max(corners_rect[:, 1]))
+                    x_min = int(np.min(corners_rect[:, 0])) - 10 # Add 5px padding
+                    y_min = int(np.min(corners_rect[:, 1])) - 10 # Add 5px padding
+                    x_max = int(np.max(corners_rect[:, 0])) + 10 # Add 5px padding
+                    y_max = int(np.max(corners_rect[:, 1])) + 10 # Add 5px padding
                     crop_tuple = (x_min, y_min, x_max - x_min, y_max - y_min)
 
                     ball_position = self.ball_detector.detect_ball(color_image, depth_image, crop=crop_tuple)
                     
+                # Draw the target position
+                    if self.target_x is not None and self.target_y is not None:
+                        target_pixel_x, target_pixel_y = self.world_to_pixel_coordinates(self.target_x, self.target_y)
+                        if target_pixel_x is not None and target_pixel_y is not None:
+                            cv2.circle(color_image, (int(target_pixel_x), int(target_pixel_y)), 25, (0, 255, 0), 3)  # Larger outer circle
+
                 if ball_position:
                     pixel_x, pixel_y, depth_z = ball_position
                     # Convert to world coordinates
@@ -467,6 +541,8 @@ class RealSenseCameraInterface:
                         except queue.Empty:
                             pass
                     
+                    
+                    
                     # Draw the ball
                     if pixel_x is not None and pixel_y is not None:
                         world_x, world_y = self.pixel_to_world_coordinates(pixel_x, pixel_y)
@@ -483,6 +559,7 @@ class RealSenseCameraInterface:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         cv2.putText(color_image, world_text, (10, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                                
                     
                 # Only show video feed if rendering is not disabled
                 if not self.disable_rendering:
@@ -608,6 +685,15 @@ class CameraSimulationInterface:
         self.prev_time = current_time
         
         return x, y, vx, vy
+    
+    def set_target_position(self, x: float, y: float):  
+        """        Set target position for the ball (camera mode only)
+        Args:
+            x: Target X position in meters
+            y: Target Y position in meters
+        """
+        if self.use_camera and self.camera:
+            self.camera.set_target(x, y)
     
     def start_tracking(self):
         """Start ball tracking (camera mode only)"""
