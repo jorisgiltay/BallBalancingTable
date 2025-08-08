@@ -488,9 +488,16 @@ class BallBalanceComparison:
         ax_table.set_ylabel('Y Position (m)')
         ax_table.grid(True, alpha=0.3)
         
-        # Draw table boundary
-        table_circle = plt.Circle((0, 0), 0.125, fill=False, color='white', linewidth=2)
-        ax_table.add_patch(table_circle)
+        # Draw table boundary as a rounded square (squircle) with 2cm corner radius
+        from matplotlib.patches import FancyBboxPatch
+        table_size = 0.24  # 24cm square
+        corner_radius = 0.02  # 2cm corner radius
+        # FancyBboxPatch uses (x, y) as lower left, so shift by -table_size/2
+        table_patch = FancyBboxPatch(
+            (-table_size/2, -table_size/2), table_size, table_size,
+            boxstyle=f"round,pad=0,rounding_size={corner_radius}",
+            linewidth=2, edgecolor='white', facecolor='none')
+        ax_table.add_patch(table_patch)
         
         # Ball position marker
         ball_marker, = ax_table.plot(0, 0, 'o', color='red', markersize=8)
