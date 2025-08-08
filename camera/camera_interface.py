@@ -38,9 +38,8 @@ class BallDetector:
         # These values are tuned for better stationary ball detection
         self.lower_white = np.array([0, 0, 180])    # Lower brightness threshold
         self.upper_white = np.array([180, 50, 255]) # Higher saturation tolerance
-        # Alternative: Orange ball detection (uncomment if using orange ball)
-        # self.lower_orange = np.array([10, 100, 100])
-        # self.upper_orange = np.array([25, 255, 255])
+
+
         
         # Contour filtering parameters - Adjusted for ball on platform (higher/closer to camera)
         self.min_contour_area = 100      # Slightly higher minimum area
@@ -75,7 +74,7 @@ class BallDetector:
         # Morphological operations to clean up the mask
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel) 
         
         # Find contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -131,8 +130,6 @@ class RealSenseCameraInterface:
         """
         self.table_size = table_size
         self.camera_height = camera_height
-        self.platform_height = 0.115  # 11.5cm platform height increase
-        self.current_camera_height = 0.36  # 36cm measured distance above platform
         self.disable_rendering = disable_rendering
         self.target_x = 0.0
         self.target_y = 0.0
@@ -165,7 +162,7 @@ class RealSenseCameraInterface:
         # Try to load existing calibration data
         self.load_existing_calibration()
         
-    def initialize_camera(self, width: int = 640, height: int = 480, fps: int = 30) -> bool:
+    def initialize_camera(self, width: int = 640, height: int = 480, fps: int = 60) -> bool:
         """
         Initialize the RealSense camera
         
@@ -251,11 +248,11 @@ class RealSenseCameraInterface:
                 self.table_corners_pixels = np.array(calib_data["corner_pixels"], dtype=np.float32)
                 
                 # Update world coordinates based on actual base plate size
-                base_plate_size = calib_data.get("base_plate_size_cm", 35) / 100.0  # Convert to meters
+                base_plate_size = calib_data.get("base_plate_size_cm", 25) / 100.0  # Convert to meters
                 marker_size = calib_data.get("marker_size_cm", 4) / 100.0  # Convert to meters
                 
                 # Blue markers are placed at corners, but their centers are offset inward by half marker size
-                marker_offset = marker_size / 2  # 2cm offset from plate edge to marker center
+                marker_offset = marker_size / 1  # 2cm offset from plate edge to marker center
                 marker_center_distance = (base_plate_size / 2) - marker_offset  # Distance from center to marker center
                 
                 # We want to map to the actual table coordinates (25cm), not the marker coordinates (31cm)
@@ -326,17 +323,6 @@ class RealSenseCameraInterface:
             
             world_x = float(world_point[0, 0, 0])
             world_y = float(world_point[0, 0, 1])
-            
-            # Empirically determined correction factor - accounts for all real-world factors
-            # including lens distortion, marker placement errors, and height effects
-            COORDINATE_CORRECTION = 0.88  # Tuned to match actual table dimensions
-            world_x *= 0.85
-            world_y *= 0.82
-
-            # Always shift X to the left by up to 0.05 at the edges (linearly)
-            max_shift = 0.005
-            half = self.table_size / 2
-            world_x = world_x - max_shift * (abs(world_x) / half)
 
             # Invert Y coordinate to match simulation coordinate system
             world_y = -world_y
@@ -377,10 +363,8 @@ class RealSenseCameraInterface:
             return pixel_x, pixel_y
 
         try:
-            # Reverse the correction and Y inversion
-            COORDINATE_CORRECTION = 0.88
-            world_x /= COORDINATE_CORRECTION
-            world_y = -world_y / COORDINATE_CORRECTION
+            #Y inversion
+            world_y = -world_y
 
             # Create 1x1x2 array of world point
             world_point = np.array([[world_x, world_y]], dtype=np.float32).reshape(1, 1, 2)
@@ -464,54 +448,20 @@ class RealSenseCameraInterface:
                     with open(json_path, 'r') as f:
                         calib_data = json.load(f)
                     
-                    # Simple approach: expand the marker center rectangle outward by 2cm equivalent pixels
-                    # Calculate the center of the marker rectangle
-                    center_x = np.mean(self.table_corners_pixels[:, 0])
-                    center_y = np.mean(self.table_corners_pixels[:, 1])
-                    
-                    # Calculate expansion factor: need to go from 31cm (marker center to center) to 35cm (edge to edge)
-                    # Current marker distance represents 31cm (35cm - 4cm), target is 35cm
-                    expansion_factor = 35.0 / 31.0  # ≈1.129
-                    
-                    # Expand each corner outward from the center
-                    plate_corners_pixel = []
-                    for corner in self.table_corners_pixels:
-                        # Vector from center to corner
-                        dx = corner[0] - center_x
-                        dy = corner[1] - center_y
-                        
-                        # Expand by factor
-                        new_x = center_x + (dx * expansion_factor)
-                        new_y = center_y + (dy * expansion_factor)
-                        
-                        plate_corners_pixel.append([new_x, new_y])
-                    
-                    plate_corners_pixel = np.array(plate_corners_pixel, dtype=np.float32)
-                    
-                    # Draw the expanded plate edge rectangle (green, thick)
+
                     corners_rect = np.array([
-                        plate_corners_pixel[0],  # TL (Top-Left plate edge)
-                        plate_corners_pixel[1],  # TR (Top-Right plate edge)  
-                        plate_corners_pixel[3],  # BR (Bottom-Right plate edge)
-                        plate_corners_pixel[2]   # BL (Bottom-Left plate edge)
+                        self.table_corners_pixels[0],  # TL (Top-Left plate edge)
+                        self.table_corners_pixels[1],  # TR (Top-Right plate edge)  
+                        self.table_corners_pixels[3],  # BR (Bottom-Right plate edge)
+                        self.table_corners_pixels[2]   # BL (Bottom-Left plate edge)
                     ])
                     corners_int = corners_rect.astype(np.int32)
                     cv2.polylines(color_image, [corners_int], True, (0, 255, 0), 2)
                     
-                    # Draw marker centers for reference (yellow, thin)
-                    marker_corners_rect = np.array([
-                        self.table_corners_pixels[0],  # TL marker center
-                        self.table_corners_pixels[1],  # TR marker center
-                        self.table_corners_pixels[3],  # BR marker center
-                        self.table_corners_pixels[2]   # BL marker center
-                    ])
-                    marker_corners_int = marker_corners_rect.astype(np.int32)
-                    cv2.polylines(color_image, [marker_corners_int], True, (0, 255, 255), 1)  # Yellow, thin line
-
-                    x_min = int(np.min(corners_rect[:, 0])) + 10 # Add 5px padding
-                    y_min = int(np.min(corners_rect[:, 1])) + 10 # Add 5px padding
-                    x_max = int(np.max(corners_rect[:, 0])) - 10 # Add 5px padding
-                    y_max = int(np.max(corners_rect[:, 1])) - 10 # Add 5px padding
+                    x_min = int(np.min(corners_rect[:, 0]))  - 5 # Add 5px padding
+                    y_min = int(np.min(corners_rect[:, 1]))  - 5# Add 5px padding
+                    x_max = int(np.max(corners_rect[:, 0]))  + 5# Add 5px padding
+                    y_max = int(np.max(corners_rect[:, 1]))  +5 # Add 5px padding
                     crop_tuple = (x_min, y_min, x_max - x_min, y_max - y_min)
 
                     ball_position = self.ball_detector.detect_ball(color_image, depth_image, crop=crop_tuple)
@@ -520,7 +470,7 @@ class RealSenseCameraInterface:
                     if self.target_x is not None and self.target_y is not None:
                         target_pixel_x, target_pixel_y = self.world_to_pixel_coordinates(self.target_x, self.target_y)
                         if target_pixel_x is not None and target_pixel_y is not None:
-                            cv2.circle(color_image, (int(target_pixel_x), int(target_pixel_y)), 25, (0, 255, 0), 3)  # Larger outer circle
+                            cv2.circle(color_image, (int(target_pixel_x), int(target_pixel_y)), 15, (0, 255, 0), 2)  # Larger outer circle
 
                 if ball_position:
                     pixel_x, pixel_y, depth_z = ball_position
@@ -548,8 +498,8 @@ class RealSenseCameraInterface:
                         world_x, world_y = self.pixel_to_world_coordinates(pixel_x, pixel_y)
                         
                         # Draw ball position - adjusted for platform height
-                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 25, (0, 0, 255), 3)  # Larger outer circle
-                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 8, (255, 255, 255), -1)  # Larger center dot
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 8, (0, 0, 255), 2)  # Larger outer circle
+                        cv2.circle(color_image, (int(pixel_x), int(pixel_y)), 3, (255, 255, 255), -1)  # Larger center dot
 
                         # Show coordinates
                         coord_text = f"Pixel: ({pixel_x:.0f}, {pixel_y:.0f})"

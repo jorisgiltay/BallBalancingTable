@@ -55,25 +55,22 @@ class BallBalanceComparison:
         self._circle_mode = False
         self._circle_angle = 0.0
         
-        # Timing parameters
+        # TIMING PARAMETERS
         self.physics_freq = 240  # Hz - physics simulation frequency
         self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
         self.control_dt = 1.0 / self.control_freq  # Control timestep
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
-        
-        # PID controllers (create these BEFORE setup_simulation)
-        # Fast stabilization with stronger integral term for better centering
-        # Higher integral gain ensures the system cares about being centered, not just stable
-        # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.1920 rad
 
-        #WITHOUT CAMERA RENDERING DELAY GAINS: 
-        self.pitch_pid = PIDController(kp=1.3, ki=0, kd=0.2, output_limits=(-0.1920, 0.1920))
-        self.roll_pid = PIDController(kp=1.3, ki=0, kd=0.2, output_limits=(-0.1920, 0.1920))
+        self.control_output_limit = np.radians(10)
 
-        # inside your class __init__
+        # PID CONTROLLER
+        self.pitch_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.roll_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
+
+        # LQR CONTROLLER
         self.lqr_controller = LQRController()
         
-        # Servo controller
+        # SERVO CONTROLLER
         self.servo_controller = None
         if self.enable_servos and SERVO_AVAILABLE:
             self.servo_controller = ServoController()
@@ -322,18 +319,6 @@ class BallBalanceComparison:
             print("ℹ️ Real camera mode - skipping PyBullet simulation setup")
             return
         p.connect(p.GUI)
-        
-        # 🎯 Configure physics for realistic ball balancing simulation
-        # These settings significantly improve stability and reduce oscillations
-        # p.setPhysicsEngineParameter(
-        #     fixedTimeStep=1./240.,      # High frequency simulation for accuracy
-        #     numSubSteps=4,              # Multiple sub-steps for contact stability
-        #     numSolverIterations=150,    # More solver iterations for better convergence
-        #     contactBreakingThreshold=0.001,  # Smaller threshold for better contacts
-        #     erp=0.2,                    # Error reduction parameter (lower = more stable)
-        #     contactERP=0.3,             # Contact error reduction (stabilizes contacts)
-        #     frictionERP=0.2             # Friction error reduction (stabilizes friction)
-        # )
         
         # Clean, professional camera setup
         p.resetDebugVisualizerCamera(
@@ -1013,10 +998,14 @@ class BallBalanceComparison:
         def on_4_release(e):
             self.set_setpoint(-0.07, -0.07)
 
+        def on_0_release(e):
+            self.set_setpoint(0.0, 0.0)
+
         keyboard.on_release_key('1', on_1_release)
         keyboard.on_release_key('2', on_2_release)
         keyboard.on_release_key('3', on_3_release)
         keyboard.on_release_key('4', on_4_release)
+        keyboard.on_release_key('0', on_0_release)
 
         keyboard.on_release_key('i', on_i_release)
         keyboard.on_release_key('w', on_w_release)
@@ -1094,16 +1083,16 @@ class BallBalanceComparison:
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
                         # More responsive gain to complement PID control and speed up convergence
-                        pitch_angle -= 0.15 * pitch_error  # More responsive correction (was 0.05)
-                        roll_angle -= 0.15 * roll_error
+                        pitch_angle -= 0.125 * pitch_error  # More responsive correction (was 0.05)
+                        roll_angle -= 0.125 * roll_error
                 
                         
                         # Store feedback info for display
                         self.imu_feedback_error = (pitch_error, roll_error)
                     
                     # Ensure final angles stay within servo limits after IMU correction
-                    pitch_angle = np.clip(pitch_angle, -0.1920, 0.1920)  # ±3.2°
-                    roll_angle = np.clip(roll_angle, -0.1920, 0.1920)   # ±3.2°
+                    pitch_angle = np.clip(pitch_angle, -self.control_output_limit, self.control_output_limit)  # ±3.2°
+                    roll_angle = np.clip(roll_angle, -self.control_output_limit, self.control_output_limit)   # ±3.2°
                 
                     
                     # For PID, these are absolute angles
@@ -1180,8 +1169,8 @@ class BallBalanceComparison:
 
                 if self._circle_mode:
                     # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
-                    self._circle_angle += 2 * np.pi / 90
-                    radius = 0.08  # or whatever radius you want
+                    self._circle_angle += 2 * np.pi / 60
+                    radius = 0.03  # or whatever radius you want
                     self.setpoint_x = radius * np.cos(self._circle_angle)
                     self.setpoint_y = radius * np.sin(self._circle_angle)
                     self.set_setpoint(self.setpoint_x, self.setpoint_y)

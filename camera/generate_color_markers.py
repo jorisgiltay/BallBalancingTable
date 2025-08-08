@@ -55,8 +55,8 @@ def generate_blue_markers():
     print("🔵 Generating Blue Markers for Ball Balancing Table")
     print("=" * 50)
     print(f"📁 Output directory: {output_dir}")
-    print(f"🖨️ Print size: 4cm x 4cm each")
-    print(f"📐 Base plate size: 35cm x 35cm")
+    print(f"🖨️ Print size: 2cm x 2cm each")
+    print(f"📐 Balance board size: 25cm x 25cm")
     print("🔵 ALL MARKERS ARE BLUE - Position determines identity!")
     print()
     
@@ -71,28 +71,13 @@ def generate_blue_markers():
             cv2.BORDER_CONSTANT, value=(255, 255, 255)
         )
         
-        # Add text label
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.5
-        thickness = 3
-        
-        # Calculate text position (center)
-        text = str(marker_id)
-        (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-        text_x = (bordered_img.shape[1] - text_width) // 2
-        text_y = (bordered_img.shape[0] + text_height) // 2
-        
-        # Add white text on blue background for visibility
-        text_color = (255, 255, 255)
-        cv2.putText(bordered_img, text, (text_x, text_y), font, font_scale, text_color, thickness)
-        
         # Save marker
-        filename = f"marker_{marker_id}_blue.png"
+        filename = f"marker_blue.png"
         filepath = os.path.join(output_dir, filename)
-        cv2.imwrite(filepath, bordered_img)
-        
+        if(marker_id == 3):
+            cv2.imwrite(filepath, bordered_img)
         print(f"✅ Generated Marker {marker_id}: {filename} (Blue - {info['position']})")
-    
+
     # Generate PDF with correctly sized markers
     if PDF_AVAILABLE:
         generate_pdf_blue_markers(marker_colors, output_dir)
@@ -104,22 +89,22 @@ def generate_blue_markers():
         print("📄 RECOMMENDED: Print the PDF file for correct sizing!")
         print("   blue_markers_instruction_sheet.pdf")
         print()
-    print("Alternative: Print individual markers at 4cm x 4cm size")
-    print("2. Get a 35cm x 35cm wooden base plate")
-    print("3. Place markers 2cm from each corner:")
+    print("Alternative: Print individual markers at 2cm x 2cm size")
+    print("2. Use the calibration clamps, glue the blue markers on them")
+    print("3. Put them on the corners of the balancing board")
     print("   • Blue (0): Top-Left corner")
     print("   • Blue (1): Top-Right corner") 
     print("   • Blue (2): Bottom-Right corner")
     print("   • Blue (3): Bottom-Left corner")
     print("4. Mount servo mechanism in CENTER of base")
     print("5. Your 25cm tilting plate goes above the servos")
-    print("6. Run camera calibration: camera.calibrate_table_detection()")
+    print("6. Run camera calibration: camera.camera_calibration_color.py")
     print()
     print("✅ All BLUE markers generated successfully!")
     print("🔵 Position-based detection is much more reliable!")
 
 def generate_pdf_blue_markers(marker_colors, output_dir):
-    """Generate PDF with BLUE markers at exactly 4cm size"""
+    """Generate PDF with BLUE markers at exactly 2cm size"""
     if not PDF_AVAILABLE:
         return
     
@@ -150,13 +135,13 @@ def generate_pdf_blue_markers(marker_colors, output_dir):
         alignment=TA_CENTER
     )
     
-    story.append(Paragraph("<b>Print at 100% scale - Each marker will be exactly 4cm x 4cm</b>", instruction_style))
+    story.append(Paragraph("<b>Print at 100% scale - Each marker will be exactly 2cm x 2cm</b>", instruction_style))
     story.append(Paragraph("<b>ALL MARKERS ARE BLUE - Position determines identity!</b>", instruction_style))
     story.append(Spacer(1, 1.5*cm))
     
     # Generate markers with proper spacing
-    marker_size = 4*cm  # Exactly 4cm in ReportLab units
-    gap_size = 2*cm     # 2cm gap between markers for easy cutting
+    marker_size = 2*cm  # Exactly 2cm in ReportLab units
+    gap_size = 4*cm     # 4cm gap between markers for easy cutting
     
     # Create colored rectangles for PDF - all blue!
     from reportlab.graphics.shapes import Drawing, Rect
@@ -181,9 +166,9 @@ def generate_pdf_blue_markers(marker_colors, output_dir):
     
     # First row: Marker 0 and 1
     row1_labels = [
-        [Paragraph(f"<b>Blue (0)</b><br/>(Top-Left)", styles['Normal']),
+        [Paragraph(f"<b>Blue (0)</b><br/>(TopLeft)", styles['Normal']),
          "",  # Empty cell for spacing
-         Paragraph(f"<b>Blue (1)</b><br/>(Top-Right)", styles['Normal'])]
+         Paragraph(f"<b>Blue (1)</b><br/>(TopRight)", styles['Normal'])]
     ]
     
     row1_markers = [
@@ -192,9 +177,9 @@ def generate_pdf_blue_markers(marker_colors, output_dir):
     
     # Second row: Marker 3 and 2  
     row2_labels = [
-        [Paragraph(f"<b>Blue (3)</b><br/>(Bottom-Left)", styles['Normal']),
+        [Paragraph(f"<b>Blue (3)</b><br/>(BottomLeft)", styles['Normal']),
          "",  # Empty cell for spacing
-         Paragraph(f"<b>Blue (2)</b><br/>(Bottom-Right)", styles['Normal'])]
+         Paragraph(f"<b>Blue (2)</b><br/>(BottomRight)", styles['Normal'])]
     ]
     
     row2_markers = [
@@ -245,7 +230,7 @@ def generate_pdf_blue_markers(marker_colors, output_dir):
     doc.build(story)
     
     print(f"📄 Generated PDF with correctly sized BLUE markers: blue_markers_instruction_sheet.pdf")
-    print(f"   🎯 Print at 100% scale - markers will be exactly 4cm x 4cm!")
+    print(f"   🎯 Print at 100% scale - markers will be exactly 2cm x 2cm!")
     print(f"   🔵 All markers are blue - position determines identity!")
 
 if __name__ == "__main__":

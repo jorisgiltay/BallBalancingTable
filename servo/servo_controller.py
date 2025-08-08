@@ -178,11 +178,11 @@ def test_servo_controller():
         # Test sequence
         movements = [
             (0, 0, "Center"),
-            (11, 0, "Pitch forward 5°"),
-            (-11, 0, "Pitch backward 5°"),
-            (0, 11, "Roll right 5°"),
-            (0, -11, "Roll left 5°"),
-            (11, 11, "Diagonal 5°"),
+            (5, 0, "Pitch forward 5°"),
+            (-5, 0, "Pitch backward 5°"),
+            (0, 5, "Roll right 5°"),
+            (0, -5, "Roll left 5°"),
+            (5, 5, "Diagonal 5°"),
             (0, 0, "Return to center")
         ]
         
@@ -227,5 +227,6 @@ def test_servo_circular_motion():
 
 
 if __name__ == "__main__":
+    
     test_servo_controller()
     #test_servo_circular_motion()
