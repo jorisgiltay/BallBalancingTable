@@ -54,14 +54,17 @@ class BallBalanceComparison:
         self.setpoint_y = 0.0
         self._circle_mode = False
         self._circle_angle = 0.0
-        
+        self._circle_radius = 0.05
+        self._invert_circle_direction = True
+        self._circle_speed = 1.0
+
         # TIMING PARAMETERS
         self.physics_freq = 240  # Hz - physics simulation frequency
         self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
         self.control_dt = 1.0 / self.control_freq  # Control timestep
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
 
-        self.control_output_limit = np.radians(10)
+        self.control_output_limit = np.radians(9)
 
         # PID CONTROLLER
         self.pitch_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
@@ -74,6 +77,7 @@ class BallBalanceComparison:
         self.servo_controller = None
         if self.enable_servos and SERVO_AVAILABLE:
             self.servo_controller = ServoController()
+            # self.servo_controller.load_calibration_data()
             if self.servo_controller.connect():
                 print("✅ Servo control enabled")
             else:
@@ -882,7 +886,6 @@ class BallBalanceComparison:
         self.setpoint_y = y
         if hasattr(self, 'camera_interface') and self.camera_interface:
             self.camera_interface.set_target_position(x, y)  # Update camera interface if applicable
-        
         print(f"Setpoint updated: ({x:.3f}, {y:.3f})")
 
         # Immediately update dashboard with new setpoint (if visuals enabled)
@@ -900,6 +903,9 @@ class BallBalanceComparison:
                 )
             except Exception as e:
                 print(f"[set_setpoint] Visual update failed: {e}")
+
+    def set_circle_radius(self, radius):
+        self._circle_radius = radius
     
     def pid_control(self, ball_x, ball_y, ball_vx, ball_vy):
         """PD control logic (no integral term needed for ball balancing)"""
@@ -971,48 +977,99 @@ class BallBalanceComparison:
         
 
         def on_w_release(e):
-            self.setpoint_y += 0.05
+            self.setpoint_y += 0.02
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_s_release(e):
-            self.setpoint_y -= 0.05
+            self.setpoint_y -= 0.02
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_a_release(e):
-            self.setpoint_x -= 0.05
+            self.setpoint_x -= 0.02
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
         def on_d_release(e):
-            self.setpoint_x += 0.05
+            self.setpoint_x += 0.02
             self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
-        def on_1_release(e):
-            self.set_setpoint(-0.07, 0.07)
+        def on_7_release(e):
+            self.set_setpoint(-0.08, 0.08)
 
-        def on_2_release(e):
-            self.set_setpoint(0.07, 0.07)
+        def on_9_release(e):
+            self.set_setpoint(0.08, 0.08)
 
         def on_3_release(e):
-            self.set_setpoint(0.07, -0.07)
+            self.set_setpoint(0.08, -0.08)
 
-        def on_4_release(e):
-            self.set_setpoint(-0.07, -0.07)
+        def on_1_release(e):
+            self.set_setpoint(-0.08, -0.08)
 
-        def on_0_release(e):
+        def on_5_release(e):
             self.set_setpoint(0.0, 0.0)
 
-        keyboard.on_release_key('1', on_1_release)
-        keyboard.on_release_key('2', on_2_release)
-        keyboard.on_release_key('3', on_3_release)
-        keyboard.on_release_key('4', on_4_release)
-        keyboard.on_release_key('0', on_0_release)
+        def on_4_release(e):
+            self.set_setpoint(-0.08, 0.0)
 
+        def on_6_release(e):
+            self.set_setpoint(0.08, 0.0)
+
+        def on_8_release(e):
+            self.set_setpoint(0.0, 0.08)
+
+        def on_2_release(e):
+            self.set_setpoint(0.0, -0.08)
+
+        def on_o_release(e):
+            self.set_circle_radius(self._circle_radius + 0.01)
+            print(f"Circle radius: {self._circle_radius:.2f} m")
+
+        def on_u_release(e):
+            self.set_circle_radius(self._circle_radius - 0.01)  
+            print(f"Circle radius: {self._circle_radius:.2f} m")
+
+        def on_k_release(e):
+            if self._invert_circle_direction:
+                self._invert_circle_direction = False
+            else:
+                self._invert_circle_direction = True
+            print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}")
+
+        def on_y_release(e):
+            self._circle_speed += 0.1
+            print(f"Circle speed: {self._circle_speed}")
+
+        def on_p_release(e):
+            self._circle_speed -= 0.1
+            print(f"Circle speed: {self._circle_speed}")
+
+        #corners and middle
+        keyboard.on_release_key('7', on_7_release)
+        keyboard.on_release_key('9', on_9_release)
+        keyboard.on_release_key('3', on_3_release)
+        keyboard.on_release_key('1', on_1_release)
+        keyboard.on_release_key('5', on_5_release)
+
+        #middle parts
+        keyboard.on_release_key('4',on_4_release)
+        keyboard.on_release_key('6', on_6_release)
+        keyboard.on_release_key('8', on_8_release)
+        keyboard.on_release_key('2', on_2_release)
+
+        # circle controls
         keyboard.on_release_key('i', on_i_release)
+        keyboard.on_release_key('u', on_u_release)
+        keyboard.on_release_key('o', on_o_release)
+        keyboard.on_release_key('k', on_k_release)
+        keyboard.on_release_key('y', on_y_release)
+        keyboard.on_release_key('p', on_p_release)
+
+        #setpoint moving
         keyboard.on_release_key('w', on_w_release)
         keyboard.on_release_key('s', on_s_release)
         keyboard.on_release_key('a', on_a_release)
         keyboard.on_release_key('d', on_d_release)
-        
+
+
         while True:
             # Only run control logic at the specified control frequency
             if physics_step_count % self.physics_steps_per_control == 0:
@@ -1083,8 +1140,8 @@ class BallBalanceComparison:
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
                         # More responsive gain to complement PID control and speed up convergence
-                        pitch_angle -= 0.125 * pitch_error  # More responsive correction (was 0.05)
-                        roll_angle -= 0.125 * roll_error
+                        pitch_angle -= 0.08 * pitch_error  # More responsive correction (was 0.05)
+                        roll_angle -= 0.08 * roll_error
                 
                         
                         # Store feedback info for display
@@ -1158,7 +1215,7 @@ class BallBalanceComparison:
                 imu_feedback = self.get_imu_feedback()
                 
                 # Update visual data (thread-safe) - every 10 steps for smoother updates
-                if self.step_count % 10 == 0:
+                if self.step_count % 1 == 0:
                     distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
                     self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, self.setpoint_x, self.setpoint_y, imu_feedback)
                 
@@ -1169,8 +1226,12 @@ class BallBalanceComparison:
 
                 if self._circle_mode:
                     # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
-                    self._circle_angle += 2 * np.pi / 60
-                    radius = 0.03  # or whatever radius you want
+                    increment = self._circle_speed * 2 * np.pi / 60
+                    if self._invert_circle_direction:
+                        self._circle_angle -= increment
+                    else:
+                        self._circle_angle += increment
+                    radius = self._circle_radius  # or whatever radius you want
                     self.setpoint_x = radius * np.cos(self._circle_angle)
                     self.setpoint_y = radius * np.sin(self._circle_angle)
                     self.set_setpoint(self.setpoint_x, self.setpoint_y)

@@ -7,13 +7,20 @@ import serial
 import time
 import os
 
-def load_calibration():
-    """Load calibration offsets"""
+def load_calibration(cal_file=None):
+    """Load calibration offsets from a file.
+    
+    If `cal_file` is None, defaults to 'embedded_imu_calibration.txt' in the script's folder.
+    """
     try:
         pitch_offset = 0.0
         roll_offset = 0.0
-        
-        cal_file = "embedded_imu_calibration.txt"
+
+        # Default to same directory as script
+        if cal_file is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            cal_file = os.path.join(script_dir, "embedded_imu_calibration.txt")
+
         if os.path.exists(cal_file):
             with open(cal_file, 'r') as f:
                 for line in f:
@@ -21,9 +28,11 @@ def load_calibration():
                         pitch_offset = float(line.split('=')[1].strip())
                     elif line.startswith('level_roll_offset'):
                         roll_offset = float(line.split('=')[1].strip())
-        
+
         return pitch_offset, roll_offset
-    except:
+
+    except Exception as e:
+        print(f"⚠️ Calibration load failed: {e}")
         return 0.0, 0.0
 
 def monitor_imu(port="COM8"):

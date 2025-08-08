@@ -6,6 +6,8 @@ Converts table angles to servo positions and controls Dynamixel servos
 from dynamixel_sdk import *
 import time
 import math
+import csv
+import numpy as np
 
 class ServoController:
     def __init__(self, device_name='COM5', baudrate=1000000, servo_ids=[1, 2]):
@@ -13,6 +15,10 @@ class ServoController:
         self.device_name = device_name
         self.baudrate = baudrate
         self.servo_ids = servo_ids
+
+        self.pitch_calibration = None
+        self.roll_calibration = None
+        self.use_calibration = False
         
         # Servo register addresses (XM430-W350 or similar)
         self.ADDR_TORQUE_ENABLE = 64
@@ -44,6 +50,27 @@ class ServoController:
         print(f"   Range: {self.DXL_MIN_POS} to {self.DXL_MAX_POS} (centers: {self.DXL_CENTER_POSITIONS})")
         print(f"   Max table angle: ±{math.degrees(self.MAX_TABLE_ANGLE_RAD):.1f}°")
         print(f"   Conversion: {self.STEPS_PER_RADIAN:.0f} steps/radian")
+
+    def load_calibration_data(self, pitch_file='servo_calib_pitch.csv', roll_file='servo_calib_roll.csv'):
+        """Load calibration CSV files and enable calibrated mapping"""
+        def load_file(filename):
+            with open(filename, 'r') as f:
+                reader = csv.DictReader(f)
+                positions = []
+                angles = []
+                for row in reader:
+                    positions.append(int(row["ServoPosition"]))
+                    angles.append(float(row["Degrees"]))
+                return np.array(angles), np.array(positions)  # Interpolation expects x (angle), y (position)
+
+        try:
+            self.pitch_calibration = load_file(pitch_file)
+            self.roll_calibration = load_file(roll_file)
+            self.use_calibration = True
+            print(f"📈 Loaded calibration data from '{pitch_file}' and '{roll_file}'")
+        except Exception as e:
+            print(f"⚠️ Failed to load calibration: {e}")
+            self.use_calibration = False
     
     def connect(self):
         """Initialize and connect to servos"""
@@ -102,16 +129,26 @@ class ServoController:
             print("🔌 Servos disconnected")
     
     def angle_to_servo_position(self, angle_rad, servo_index):
-        """Convert table angle (radians) to servo position for a given servo index (0 or 1)"""
-        # Clamp angle to safe range
-        angle_rad = max(-self.MAX_TABLE_ANGLE_RAD, min(self.MAX_TABLE_ANGLE_RAD, angle_rad))
-        # Convert to servo steps
-        steps_from_center = int(angle_rad * self.STEPS_PER_RADIAN)
-        center_pos = self.DXL_CENTER_POSITIONS[servo_index]
-        servo_position = center_pos + steps_from_center
-        # Clamp to servo limits
-        servo_position = max(self.DXL_MIN_POS, min(self.DXL_MAX_POS, servo_position))
-        return servo_position
+        """Convert angle to servo position using calibration or default mapping"""
+        angle_deg = math.degrees(angle_rad)
+        if self.use_calibration:
+            if servo_index == 0 and self.pitch_calibration:
+                angles, positions = self.pitch_calibration
+            elif servo_index == 1 and self.roll_calibration:
+                angles, positions = self.roll_calibration
+            else:
+                raise ValueError("Calibration data missing for servo index", servo_index)
+
+            # Clamp to calibration range
+            angle_deg = max(min(angle_deg, max(angles)), min(angles))
+            return int(np.interp(angle_deg, angles, positions))
+        else:
+            # Default linear mapping
+            angle_rad = max(-self.MAX_TABLE_ANGLE_RAD, min(self.MAX_TABLE_ANGLE_RAD, angle_rad))
+            steps_from_center = int(angle_rad * self.STEPS_PER_RADIAN)
+            center_pos = self.DXL_CENTER_POSITIONS[servo_index]
+            servo_position = center_pos + steps_from_center
+            return max(self.DXL_MIN_POS, min(self.DXL_MAX_POS, servo_position))
     
     def to_little_endian_bytes(self, value):
         """Convert integer to 4-byte little-endian array"""
