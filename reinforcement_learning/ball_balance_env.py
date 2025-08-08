@@ -21,13 +21,13 @@ class BallBalanceEnv(gym.Env):
     - Table roll angle change
     """
     
-    def __init__(self, render_mode="human", max_steps=2000, control_freq=50, enable_servo_uncertainty=True):
+    def __init__(self, render_mode="human", max_steps=2000, control_freq=50):
         super().__init__()
         
         self.render_mode = render_mode
         self.max_steps = max_steps
         self.current_step = 0
-        self.enable_servo_uncertainty = enable_servo_uncertainty
+
         
         # Action space: pitch and roll angle changes (in radians) - smaller for smoother control
         self.action_space = spaces.Box(
@@ -63,44 +63,6 @@ class BallBalanceEnv(gym.Env):
         self.prev_actions = []  # Track action history for oscillation detection
         self.prev_action = None  # Track previous action for jerk penalty
         
-        # 🔧 SERVO UNCERTAINTY MODEL - Realistic XL430-250T servo behavior for RL training
-        # Parameters tuned for Dynamixel XL430-250T servos (high-quality, 60Hz update rate)
-        self.servo_uncertainty = {
-            'enable': self.enable_servo_uncertainty,  # Can be disabled for perfect control debugging
-            
-            # Backlash/Dead Zone - XL430 has minimal backlash but still present
-            'backlash_degrees': 0.05,  # ±0.05° dead zone (XL430 is quite precise)
-            
-            # Response delay - 60Hz servo update rate = ~16.7ms delay
-            'response_delay_steps': 1,  # ~20ms delay at 50Hz control (60Hz servo = minimal delay)
-            
-            # Position noise - XL430 has good resolution but still has jitter
-            'position_noise_std': 0.02,  # 0.02° standard deviation (high-quality servo)
-            
-            # Saturation effects - XL430 has smooth response curves
-            'saturation_softness': 0.9,  # Very gradual saturation (quality servo)
-            
-            # Hysteresis - minimal for XL430 due to quality gears
-            'hysteresis_strength': 0.01,  # 0.01° hysteresis effect (very low)
-            
-            # Compliance - XL430 is quite stiff but table weight still affects it slightly
-            'compliance_factor': 0.005,  # 0.5% position error under load (stiff servo)
-        }
-        
-        # Servo state tracking for uncertainty model
-        self.servo_state = {
-            'commanded_pitch': 0.0,      # What we told servo to do
-            'commanded_roll': 0.0,
-            'actual_pitch': 0.0,         # What servo actually achieved (with uncertainty)
-            'actual_roll': 0.0,
-            'previous_pitch': 0.0,       # For hysteresis calculation
-            'previous_roll': 0.0,
-            'delay_buffer_pitch': [],    # Command delay buffer
-            'delay_buffer_roll': [],
-            'last_direction_pitch': 0,   # -1, 0, 1 for hysteresis
-            'last_direction_roll': 0,
-        }
-        
         # Initialize PyBullet
         self.physics_client = None
         self.table_id = None
@@ -120,20 +82,7 @@ class BallBalanceEnv(gym.Env):
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
         self.prev_action = None  # Reset previous action for jerk penalty
-        
-        # 🔧 Reset servo uncertainty state
-        self.servo_state = {
-            'commanded_pitch': 0.0,
-            'commanded_roll': 0.0,
-            'actual_pitch': 0.0,
-            'actual_roll': 0.0,
-            'previous_pitch': 0.0,
-            'previous_roll': 0.0,
-            'delay_buffer_pitch': [],
-            'delay_buffer_roll': [],
-            'last_direction_pitch': 0,
-            'last_direction_roll': 0,
-        }
+    
         
         # Disconnect existing physics client if it exists
         if self.physics_client is not None:
@@ -236,14 +185,11 @@ class BallBalanceEnv(gym.Env):
         self.table_roll += action[1]
         
         # Clip angles to reasonable limits
-        self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
-        self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
-        
-        # 🔧 Apply servo uncertainty to get realistic actual table angles
-        actual_pitch, actual_roll = self.apply_servo_uncertainty(self.table_pitch, self.table_roll)
-        
-        # Update table orientation with ACTUAL servo positions (including uncertainty)
-        quat = p.getQuaternionFromEuler([actual_pitch, actual_roll, 0])
+        self.table_pitch = np.clip(self.table_pitch, -0.1920, 0.1920)
+        self.table_roll = np.clip(self.table_roll, -0.1920, 0.1920)
+
+        # Update table orientation with ACTUAL servo positions 
+        quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
         p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
         
         # Step simulation multiple times to maintain proper physics frequency
@@ -287,142 +233,6 @@ class BallBalanceEnv(gym.Env):
         ], dtype=np.float32)
         
         return observation
-    
-    def apply_servo_uncertainty(self, commanded_pitch, commanded_roll):
-        """
-        Apply realistic servo uncertainty and mechanical imperfections
-        
-        This simulates real-world XL430-250T servo behavior including:
-        - Backlash/dead zone
-        - Response delays
-        - Position noise
-        - Saturation effects
-        - Hysteresis
-        - Mechanical compliance
-        
-        Returns actual achieved angles (with uncertainty)
-        """
-        if not self.servo_uncertainty['enable']:
-            return commanded_pitch, commanded_roll
-        
-        # 1. RESPONSE DELAY - Commands take time to execute
-        # Add current commands to delay buffer
-        self.servo_state['delay_buffer_pitch'].append(commanded_pitch)
-        self.servo_state['delay_buffer_roll'].append(commanded_roll)
-        
-        # Keep buffer at correct size
-        delay_steps = self.servo_uncertainty['response_delay_steps']
-        if len(self.servo_state['delay_buffer_pitch']) > delay_steps:
-            self.servo_state['delay_buffer_pitch'].pop(0)
-            self.servo_state['delay_buffer_roll'].pop(0)
-        
-        # Use delayed command if buffer is full, otherwise use current
-        if len(self.servo_state['delay_buffer_pitch']) >= delay_steps:
-            delayed_pitch = self.servo_state['delay_buffer_pitch'][0]
-            delayed_roll = self.servo_state['delay_buffer_roll'][0]
-        else:
-            delayed_pitch = commanded_pitch
-            delayed_roll = commanded_roll
-        
-        # 2. BACKLASH/DEAD ZONE - Must overcome mechanical slack
-        backlash_rad = np.radians(self.servo_uncertainty['backlash_degrees'])
-        
-        def apply_backlash(commanded, actual, previous):
-            movement = commanded - previous
-            if abs(movement) < backlash_rad:
-                # Movement too small to overcome backlash - no change
-                return actual
-            else:
-                # Movement large enough - but reduced by backlash amount
-                if movement > 0:
-                    return actual + max(0, movement - backlash_rad)
-                else:
-                    return actual + min(0, movement + backlash_rad)
-        
-        pitch_after_backlash = apply_backlash(
-            delayed_pitch, 
-            self.servo_state['actual_pitch'], 
-            self.servo_state['previous_pitch']
-        )
-        roll_after_backlash = apply_backlash(
-            delayed_roll, 
-            self.servo_state['actual_roll'], 
-            self.servo_state['previous_roll']
-        )
-        
-        # 3. HYSTERESIS - Different behavior based on movement direction
-        hysteresis = np.radians(self.servo_uncertainty['hysteresis_strength'])
-        
-        def apply_hysteresis(target, actual, last_direction):
-            movement_direction = np.sign(target - actual)
-            
-            if movement_direction != last_direction and movement_direction != 0:
-                # Direction changed - apply hysteresis offset
-                if movement_direction > 0:
-                    return target - hysteresis
-                else:
-                    return target + hysteresis
-            return target
-        
-        # Update movement directions
-        pitch_direction = np.sign(delayed_pitch - self.servo_state['actual_pitch'])
-        roll_direction = np.sign(delayed_roll - self.servo_state['actual_roll'])
-        
-        pitch_with_hysteresis = apply_hysteresis(
-            pitch_after_backlash, 
-            self.servo_state['actual_pitch'],
-            self.servo_state['last_direction_pitch']
-        )
-        roll_with_hysteresis = apply_hysteresis(
-            roll_after_backlash, 
-            self.servo_state['actual_roll'],
-            self.servo_state['last_direction_roll']
-        )
-        
-        # 4. SATURATION EFFECTS - Non-linear response near limits
-        servo_limit = 0.0559  # ±3.2° servo limit
-        softness = self.servo_uncertainty['saturation_softness']
-        
-        def soft_saturation(angle, limit, softness):
-            """Smooth saturation instead of hard clipping"""
-            if abs(angle) < limit * softness:
-                return angle  # Linear region
-            else:
-                # Soft saturation region
-                sign = np.sign(angle)
-                excess = abs(angle) - limit * softness
-                max_excess = limit * (1 - softness)
-                # Smooth transition using tanh
-                return sign * (limit * softness + max_excess * np.tanh(excess / max_excess))
-        
-        pitch_saturated = soft_saturation(pitch_with_hysteresis, servo_limit, softness)
-        roll_saturated = soft_saturation(roll_with_hysteresis, servo_limit, softness)
-        
-        # 5. COMPLIANCE - Servo "gives" under load (table weight)
-        compliance = self.servo_uncertainty['compliance_factor']
-        pitch_compliant = pitch_saturated * (1 - compliance)
-        roll_compliant = roll_saturated * (1 - compliance)
-        
-        # 6. POSITION NOISE - Random deviations
-        noise_std = np.radians(self.servo_uncertainty['position_noise_std'])
-        pitch_noise = np.random.normal(0, noise_std)
-        roll_noise = np.random.normal(0, noise_std)
-        
-        # Final actual positions
-        actual_pitch = pitch_compliant + pitch_noise
-        actual_roll = roll_compliant + roll_noise
-        
-        # Update servo state for next iteration
-        self.servo_state['commanded_pitch'] = commanded_pitch
-        self.servo_state['commanded_roll'] = commanded_roll
-        self.servo_state['previous_pitch'] = self.servo_state['actual_pitch']
-        self.servo_state['previous_roll'] = self.servo_state['actual_roll']
-        self.servo_state['actual_pitch'] = actual_pitch
-        self.servo_state['actual_roll'] = actual_roll
-        self.servo_state['last_direction_pitch'] = pitch_direction
-        self.servo_state['last_direction_roll'] = roll_direction
-        
-        return actual_pitch, actual_roll
     
     def _calculate_reward(self, observation, action):
         ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation
@@ -532,8 +342,8 @@ class BallBalanceEnv(gym.Env):
         # Simple PD controller logic: proportional to position + derivative (velocity)
         
         # Proportional gains (how much to tilt based on position error)
-        kp = 0.8  # Position gain
-        kd = 0.08  # Velocity (derivative) gain
+        kp = 1.3  # Position gain
+        kd = 0.2  # Velocity (derivative) gain
         
         # Calculate desired table tilts to center the ball
         # Tilt table opposite to ball position to "roll" ball toward center
@@ -541,8 +351,8 @@ class BallBalanceEnv(gym.Env):
         desired_roll = -ball_y * kp - ball_vy * kd
         
         # Clip to action space limits
-        desired_pitch = np.clip(desired_pitch, -0.0524, 0.0524)
-        desired_roll = np.clip(desired_roll, -0.0524, 0.0524)
+        desired_pitch = np.clip(desired_pitch, -0.1920, 0.1920)
+        desired_roll = np.clip(desired_roll, -0.1920, 0.1920)
         
         return np.array([desired_pitch, desired_roll], dtype=np.float32)
     
