@@ -1126,9 +1126,9 @@ class BallBalanceComparison:
                         self.table_roll = 0.0
                         control_action = [0.0, 0.0]
                 elif self.control_method == "lqr":
-                    pitch_angle, roll_angle = self.lqr_controller.control(ball_x, ball_y, ball_vx, ball_vy)
+                    pitch_angle, roll_angle = self.lqr_controller.control(ball_x, ball_y, ball_vx, ball_vy,setpoint_x=self.setpoint_x, setpoint_y=self.setpoint_y)
                     # For LQR, these are absolute angles
-                    self.table_pitch = pitch_angle
+                    self.table_pitch = -pitch_angle
                     self.table_roll = roll_angle
                     control_action = [pitch_angle, roll_angle]
                 elif self.control_method == "pid":

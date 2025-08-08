@@ -2,7 +2,7 @@ import numpy as np
 from scipy.linalg import solve_continuous_are
 
 class LQRController:
-    def __init__(self, velocity_smoothing=False):
+    def __init__(self, velocity_smoothing=True):
         # Simplified linear model: [ball_x, ball_vx, ball_y, ball_vy]
         self.A = np.array([
             [0, 1, 0, 0],
@@ -20,13 +20,13 @@ class LQRController:
         ])
 
         # State cost matrix — prioritize ball position much more than velocity
-        self.Q = np.diag([50, 2, 50, 2])
+        self.Q = np.diag([50, 2, 2, 10])
 
         # Control effort cost — higher for smoother control
-        self.R = np.diag([5, 5])
+        self.R = np.diag([50, 50])
 
         # Servo output limits (±3.2°)
-        self.servo_limit = 0.0559
+        self.servo_limit = np.radians(3)
 
         # Optional velocity smoothing
         self.velocity_smoothing = velocity_smoothing
@@ -42,8 +42,8 @@ class LQRController:
         K = np.linalg.inv(R) @ B.T @ P
         return K
 
-    def control(self, ball_x, ball_y, ball_vx, ball_vy):
-        """Compute LQR control output given current state, with output clipping and optional velocity smoothing"""
+    def control(self, ball_x, ball_y, ball_vx, ball_vy, setpoint_x=0.0, setpoint_y=0.0, setpoint_vx=0.0, setpoint_vy=0.0):
+        """Compute LQR control output given current state and setpoint, with output clipping and optional velocity smoothing"""
         # Optionally smooth velocity estimates
         if self.velocity_smoothing:
             if self.prev_ball_vx is not None:
@@ -53,7 +53,7 @@ class LQRController:
             self.prev_ball_vy = ball_vy
 
         x = np.array([ball_x, ball_vx, ball_y, ball_vy])
-        x_desired = np.zeros(4)
+        x_desired = np.array([setpoint_x, setpoint_vx, setpoint_y, setpoint_vy])
         u = -self.K @ (x - x_desired)
 
         # Clip output to servo limits
