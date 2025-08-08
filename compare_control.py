@@ -490,7 +490,7 @@ class BallBalanceComparison:
         
         # Draw table boundary as a rounded square (squircle) with 2cm corner radius
         from matplotlib.patches import FancyBboxPatch
-        table_size = 0.24  # 24cm square
+        table_size = 0.25  # 25cm square
         corner_radius = 0.02  # 2cm corner radius
         # FancyBboxPatch uses (x, y) as lower left, so shift by -table_size/2
         table_patch = FancyBboxPatch(
