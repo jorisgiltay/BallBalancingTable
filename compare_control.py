@@ -861,8 +861,6 @@ class BallBalanceComparison:
             ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
 
-        print(f"Ball: x={observation[0]:.3f}, y={observation[1]:.3f}, vx={observation[2]:.3f}, vy={observation[3]:.3f} , pitch={observation[4]:.3f}, roll={observation[5]:.3f}")
-
         return observation
     
     def _get_simulation_observation(self):
@@ -885,8 +883,6 @@ class BallBalanceComparison:
         observation = np.array([
             ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
-
-        print(f"Ball: x={observation[0]:.3f}, y={observation[1]:.3f}, vx={observation[2]:.3f}, vy={observation[3]:.3f} , pitch={observation[4]:.3f}, roll={observation[5]:.3f}")
         
         return observation
     
@@ -945,11 +941,9 @@ class BallBalanceComparison:
         action, _ = self.rl_model.predict(observation, deterministic=True)
         # Only print RL actions occasionally to avoid spam
         # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
-        print(f"RL action: {action}")
-        if self.camera_mode in ["hybrid", "real"]:
-            action = [-action[1], -action[0]]
-        else:
-            action = action[0], action[1]  # Reverse order for simulation
+
+        action = [-action[1], -action[0]]
+
         return action  # pitch_change, roll_change
     
     def run_simulation(self):
