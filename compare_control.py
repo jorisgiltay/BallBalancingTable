@@ -1237,8 +1237,8 @@ class BallBalanceComparison:
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 # Check if ball fell off - 25cm table (radius = 0.125m)
-                distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                ball_fell = distance_from_center > 0.125 and ball_z < 0.5
+                # Use square bounds for a 24cm x 24cm table (±0.12m)
+                ball_fell = (abs(ball_x) > 0.12 or abs(ball_y) > 0.12) and ball_z < 0.5
 
                 if self._circle_mode:
                     # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
