@@ -1,6 +1,7 @@
 import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold, CheckpointCallback, BaseCallback
 from stable_baselines3.common.monitor import Monitor
@@ -83,7 +84,7 @@ class RenderToggleCallback(BaseCallback):
         return True
 
 
-def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50, start_tensorboard=False, enable_servo_uncertainty=True):
+def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_training=False, control_freq=50, start_tensorboard=False):
     """Train a reinforcement learning agent for ball balancing"""
     
     # Create directories first (in local reinforcement_learning directory)
@@ -124,41 +125,40 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     
     # Create environment with optional rendering and specified control frequency
     if render_training:
-        env = BallBalanceEnv(render_mode="human", control_freq=control_freq, enable_servo_uncertainty=enable_servo_uncertainty)
+        env = BallBalanceEnv(render_mode="human", control_freq=control_freq)
         print("🎬 Training with visual rendering enabled")
     else:
-        env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq, enable_servo_uncertainty=enable_servo_uncertainty)  # No visual rendering for speed
+        env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq)  # No visual rendering for speed
         print("⚡ Training without visual rendering for maximum speed")
     print(f"⏱️ Control frequency: {control_freq} Hz")
-    print(f"🔧 Servo uncertainty: {'ENABLED (realistic)' if enable_servo_uncertainty else 'DISABLED (perfect control)'}")
     env = Monitor(env)
     
     # Create evaluation environment (without rendering for speed)
-    eval_env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq, enable_servo_uncertainty=enable_servo_uncertainty)
+    eval_env = BallBalanceEnv(render_mode="rgb_array", control_freq=control_freq)
     eval_env = Monitor(eval_env)
     
     # Create model with ANTI-OVERFITTING hyperparameters
-    model = PPO(
+    model = SAC(
         "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=1e-4,     # Lower learning rate for stability
-        n_steps=2048,           # Smaller buffer for more diverse experiences
-        batch_size=64,          # Smaller batches to prevent overfitting
-        n_epochs=3,             # Fewer epochs to prevent overfitting
-        gamma=0.99,             # Standard discount factor
-        gae_lambda=0.95,        # Keep GAE lambda
-        clip_range=0.15,        # Moderate clipping
-        clip_range_vf=0.15,     # Also clip value function
-        ent_coef=0.02,          # Higher entropy to prevent overfitting
-        vf_coef=0.5,            # Standard value function coefficient
-        max_grad_norm=0.5,      # Standard gradient clipping
-        tensorboard_log="./tensorboard_logs/",
+        learning_rate=1e-4,          # Lower LR for stability
+        buffer_size=100000,          # Replay buffer size
+        batch_size=64,               # Batch size for updates
+        tau=0.005,                   # Target network smoothing coefficient
+        gamma=0.99,                  # Discount factor
+        train_freq=1,                # Train every environment step
+        gradient_steps=1,            # Number of updates per step
+        ent_coef="auto",             # Learn entropy coefficient automatically
+        target_update_interval=1,    # How often to update target net
+        learning_starts=1000,        # Delay training until some experience
         policy_kwargs=dict(
-            net_arch=[64, 64],  # Smaller network to prevent overfitting
-            activation_fn=torch.nn.Tanh,  # More stable than ReLU
-        )
+            net_arch=[64, 64],       # Smaller network
+            activation_fn=torch.nn.Tanh  # More stable than ReLU
+        ),
+        tensorboard_log="./tensorboard_logs/"
     )
+    
     
     # Create callbacks
     callbacks = []
@@ -179,7 +179,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     if use_early_stopping:
         # Adjusted thresholds for simplified linear reward function
         # With max ~1800 per episode, aim for 70-80% of theoretical max
-        reward_threshold = 1200.0 if control_freq >= 50 else 1000.0  # Much higher threshold for linear rewards
+        reward_threshold = 1800 if control_freq >= 50 else 1000.0  # Much higher threshold for linear rewards
         callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
         print(f"Early stopping threshold: {reward_threshold} (adjusted for simplified linear reward)")
         
@@ -217,7 +217,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     # Train the model - increased timesteps since agent was just starting to improve at 150k
     try:
         model.learn(
-            total_timesteps=500000,  # Back to 500k - agent needs more time to fully converge
+            total_timesteps=750000,  # Back to 500k - agent needs more time to fully converge
             callback=callbacks,
             progress_bar=True
         )
@@ -240,16 +240,15 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     return model
 
 
-def test_trained_agent(model_path="./models/ball_balance_ppo_final", control_freq=50, enable_servo_uncertainty=True):
+def test_trained_agent(model_path="./models/ball_balance_ppo_final", control_freq=50):
     """Test a trained agent"""
     
     # Load the model
     model = PPO.load(model_path)
     
     # Create test environment with rendering and matching control frequency
-    env = BallBalanceEnv(render_mode="human", control_freq=control_freq, enable_servo_uncertainty=enable_servo_uncertainty)
+    env = BallBalanceEnv(render_mode="human", control_freq=control_freq)
     print(f"Testing with {control_freq} Hz control frequency")
-    print(f"🔧 Servo uncertainty: {'ENABLED (realistic)' if enable_servo_uncertainty else 'DISABLED (perfect control)'}")
     
     print("Testing trained agent. Press Ctrl+C to stop.")
     
@@ -287,21 +286,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")
     parser.add_argument("--freq", type=int, default=60, help="Control frequency in Hz (default: 60)")
     parser.add_argument("--tensorboard", action="store_true", help="Automatically start TensorBoard during training")
-    parser.add_argument("--no-servo-uncertainty", action="store_true", help="Disable servo uncertainty for perfect control (debugging)")
-    parser.add_argument("--servo-uncertainty", action="store_true", help="Enable servo uncertainty for realistic training (default)")
     
     args = parser.parse_args()
-    
-    # Determine servo uncertainty setting
-    if args.no_servo_uncertainty and args.servo_uncertainty:
-        print("Error: Cannot use both --servo-uncertainty and --no-servo-uncertainty")
-        exit(1)
-    elif args.no_servo_uncertainty:
-        servo_uncertainty = False
-        print("🔧 Servo uncertainty: DISABLED (perfect control for debugging)")
-    else:
-        servo_uncertainty = True  # Default to enabled for realistic training
-        print("🔧 Servo uncertainty: ENABLED (realistic XL430-250T behavior)")
     
     # Determine render mode
     if args.render and args.no_render:
@@ -323,10 +309,9 @@ if __name__ == "__main__":
             train_rl_agent(use_early_stopping=not args.no_early_stop, 
                           render_training=render_training, 
                           control_freq=args.freq,
-                          start_tensorboard=args.tensorboard,
-                          enable_servo_uncertainty=servo_uncertainty)
+                          start_tensorboard=args.tensorboard)
     elif args.mode == "recover":
         from recovery_tool import rollback_to_checkpoint
         rollback_to_checkpoint()
     else:
-        test_trained_agent(args.model, control_freq=args.freq, enable_servo_uncertainty=servo_uncertainty)
+        test_trained_agent(args.model, control_freq=args.freq)

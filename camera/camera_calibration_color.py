@@ -144,26 +144,26 @@ class ColorCalibrationTest:
         
         # Sort top markers by X (left to right) -> Red(TL), Green(TR)
         top_sorted = top_markers[np.argsort(top_markers[:, 0])]
-        red_marker = top_sorted[0][:2]    # Top-left
-        green_marker = top_sorted[1][:2]  # Top-right
+        top_left_marker = top_sorted[0][:2]    # Top-left
+        top_right_marker = top_sorted[1][:2]  # Top-right
         
         # Sort bottom markers by X (left to right) -> Yellow(BL), Blue(BR)
         bottom_sorted = bottom_markers[np.argsort(bottom_markers[:, 0])]
-        yellow_marker = bottom_sorted[0][:2]  # Bottom-left
-        blue_marker = bottom_sorted[1][:2]    # Bottom-right
+        bottom_left_marker = bottom_sorted[0][:2]  # Bottom-left
+        bottom_right_marker = bottom_sorted[1][:2]    # Bottom-right
         
         print(f"   📍 Assigned positions:")
-        print(f"      Red (TL): ({red_marker[0]:.0f}, {red_marker[1]:.0f})")
-        print(f"      Green (TR): ({green_marker[0]:.0f}, {green_marker[1]:.0f})")
-        print(f"      Yellow (BL): ({yellow_marker[0]:.0f}, {yellow_marker[1]:.0f})")
-        print(f"      Blue (BR): ({blue_marker[0]:.0f}, {blue_marker[1]:.0f})")
+        print(f"      Red (TL): ({top_left_marker[0]:.0f}, {top_left_marker[1]:.0f})")
+        print(f"      Green (TR): ({top_right_marker[0]:.0f}, {top_right_marker[1]:.0f})")
+        print(f"      Yellow (BL): ({bottom_left_marker[0]:.0f}, {bottom_left_marker[1]:.0f})")
+        print(f"      Blue (BR): ({bottom_right_marker[0]:.0f}, {bottom_right_marker[1]:.0f})")
         
         # Arrange corners: [Red, Green, Yellow, Blue] -> [TL, TR, BL, BR]
         corner_points = np.array([
-            red_marker,    # Red (Top-left)
-            green_marker,  # Green (Top-right)  
-            yellow_marker, # Yellow (Bottom-left)
-            blue_marker    # Blue (Bottom-right)
+            top_left_marker,    # Red (Top-left)
+            top_right_marker,  # Green (Top-right)  
+            bottom_left_marker, # Yellow (Bottom-left)
+            bottom_right_marker    # Blue (Bottom-right)
         ], dtype=np.float32)
         
         print(f"✅ Found all 4 blue markers and assigned positions!")
@@ -214,7 +214,7 @@ class ColorCalibrationTest:
                         corners[2]   # BL (Bottom-Left)
                     ])
                     corners_int = corners_rect.astype(np.int32)
-                    cv2.polylines(preview_image, [corners_int], True, (0, 255, 0), 3)
+                    cv2.polylines(preview_image, [corners_int], True, (0, 255, 0), 2)
                     
                     # Position-based labels and colors
                     colors = [(255, 255, 255), (255, 255, 255), (255, 255, 255), (255, 255, 255)]  # All white circles
@@ -222,8 +222,8 @@ class ColorCalibrationTest:
                     
                     for i, corner in enumerate(corners):
                         x, y = int(corner[0]), int(corner[1])
-                        cv2.circle(preview_image, (x, y), 12, colors[i], -1)
-                        cv2.circle(preview_image, (x, y), 12, (0, 255, 0), 2)  # Green border
+                        cv2.circle(preview_image, (x, y), 6, colors[i], -1)
+                        cv2.circle(preview_image, (x, y), 6, (0, 255, 0), 1)  # Green border
                         cv2.putText(preview_image, position_names[i], (x-15, y-20), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
@@ -380,9 +380,9 @@ class ColorCalibrationTest:
             "marker_colors": ["Blue", "Blue", "Blue", "Blue"],  # All blue!
             "marker_positions": ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"],
             "marker_ids": [0, 1, 2, 3],
-            "base_plate_size_cm": 35,      # 35x35cm base plate
+            "base_plate_size_cm": 25,      # 35x35cm base plate
             "table_size_cm": 25,           # 25x25cm tilting table
-            "marker_size_cm": 4,           # 4x4cm colored markers
+            "marker_size_cm": 2,           # 4x4cm colored markers
             "valid_samples": valid_samples,
             "corner_pixels": self.table_corners_pixels.tolist(),
             "images_saved": images_saved,

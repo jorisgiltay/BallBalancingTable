@@ -3,10 +3,12 @@ import pybullet_data
 import time
 import numpy as np
 from pid_controller import PIDController
+from lqr_controller import LQRController
 import argparse
 import os
 import threading
 import queue
+import keyboard
 
 # Optional servo control
 try:
@@ -27,8 +29,7 @@ except ImportError:
 # Optional IMU feedback
 try:
     import sys
-    sys.path.append('imu')
-    from imu_simple import SimpleBNO055Interface
+    from imu.imu_simple import SimpleBNO055Interface
     IMU_AVAILABLE = True
 except ImportError:
     IMU_AVAILABLE = False
@@ -49,69 +50,34 @@ class BallBalanceComparison:
         self.imu_control = imu_control  # Flag to enable IMU control mode (table follows IMU)
         self.camera_mode = camera_mode  # Camera mode: "simulation", "hybrid", or "real"
         self.disable_camera_rendering = disable_camera_rendering  # Flag to disable camera feed display for performance
-        
-        # Timing parameters
+        self.setpoint_x = 0.0
+        self.setpoint_y = 0.0
+        self._circle_mode = False
+        self._circle_angle = 0.0
+        self._circle_radius = 0.05
+        self._invert_circle_direction = True
+        self._circle_speed = 1.0
+
+        # TIMING PARAMETERS
         self.physics_freq = 240  # Hz - physics simulation frequency
         self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
         self.control_dt = 1.0 / self.control_freq  # Control timestep
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
+
+        self.control_output_limit = np.radians(9)
+
+        # PID CONTROLLER
+        self.pitch_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.roll_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
+
+        # LQR CONTROLLER
+        self.lqr_controller = LQRController()
         
-        # PID controllers (create these BEFORE setup_simulation)
-        # Fast stabilization with stronger integral term for better centering
-        # Higher integral gain ensures the system cares about being centered, not just stable
-        # Servo limits: ±3.2° = ±0.0559 rad, PID limits: ±3.0° = ±0.0524 rad
-
-        #WITHOUT CAMERA RENDERING DELAY GAINS: 
-        self.pitch_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
-        self.roll_pid = PIDController(kp=0.8, ki=0.6, kd=0.08, output_limits=(-0.0524, 0.0524))
-
-        #WITH CAMERA RENDERING DELAY GAINS:
-        # self.pitch_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
-        # self.roll_pid = PIDController(kp=0.8, ki=0.2, kd=0.08, output_limits=(-0.0524, 0.0524))
-
-        # 🔧 SERVO UNCERTAINTY MODEL - Realistic XL430-250T servo behavior
-        # Parameters tuned for Dynamixel XL430-250T servos (high-quality, 60Hz update rate)
-        self.servo_uncertainty = {
-            'enable': True,  # Set to False to disable servo uncertainty
-            
-            # Backlash/Dead Zone - XL430 has minimal backlash but still present
-            'backlash_degrees': 0.05,  # ±0.05° dead zone (XL430 is quite precise)
-            
-            # Response delay - 60Hz servo update rate = ~16.7ms delay
-            'response_delay_steps': 1,  # ~20ms delay at 50Hz control (60Hz servo = minimal delay)
-            
-            # Position noise - XL430 has good resolution but still has jitter
-            'position_noise_std': 0.02,  # 0.02° standard deviation (high-quality servo)
-            
-            # Saturation effects - XL430 has smooth response curves
-            'saturation_softness': 0.9,  # Very gradual saturation (quality servo)
-            
-            # Hysteresis - minimal for XL430 due to quality gears
-            'hysteresis_strength': 0.01,  # 0.01° hysteresis effect (very low)
-            
-            # Compliance - XL430 is quite stiff but table weight still affects it slightly
-            'compliance_factor': 0.005,  # 0.5% position error under load (stiff servo)
-        }
-        
-        # Servo state tracking for uncertainty model
-        self.servo_state = {
-            'commanded_pitch': 0.0,      # What we told servo to do
-            'commanded_roll': 0.0,
-            'actual_pitch': 0.0,         # What servo actually achieved (with uncertainty)
-            'actual_roll': 0.0,
-            'previous_pitch': 0.0,       # For hysteresis calculation
-            'previous_roll': 0.0,
-            'delay_buffer_pitch': [],    # Command delay buffer
-            'delay_buffer_roll': [],
-            'last_direction_pitch': 0,   # -1, 0, 1 for hysteresis
-            'last_direction_roll': 0,
-        }
-
-        
-        # Servo controller
+        # SERVO CONTROLLER
         self.servo_controller = None
         if self.enable_servos and SERVO_AVAILABLE:
             self.servo_controller = ServoController()
+            # self.servo_controller.load_calibration_data()
             if self.servo_controller.connect():
                 print("✅ Servo control enabled")
             else:
@@ -199,8 +165,6 @@ class BallBalanceComparison:
         # State tracking
         self.table_pitch = 0.0  # Commanded table angles
         self.table_roll = 0.0
-        self.actual_table_pitch = 0.0  # Actual table angles (with servo uncertainty)
-        self.actual_table_roll = 0.0
         self.prev_ball_pos = None  # For velocity estimation  
         self.step_count = 0
         self.randomize_ball = True  # Start with randomized positions
@@ -360,18 +324,6 @@ class BallBalanceComparison:
             return
         p.connect(p.GUI)
         
-        # 🎯 Configure physics for realistic ball balancing simulation
-        # These settings significantly improve stability and reduce oscillations
-        # p.setPhysicsEngineParameter(
-        #     fixedTimeStep=1./240.,      # High frequency simulation for accuracy
-        #     numSubSteps=4,              # Multiple sub-steps for contact stability
-        #     numSolverIterations=150,    # More solver iterations for better convergence
-        #     contactBreakingThreshold=0.001,  # Smaller threshold for better contacts
-        #     erp=0.2,                    # Error reduction parameter (lower = more stable)
-        #     contactERP=0.3,             # Contact error reduction (stabilizes contacts)
-        #     frictionERP=0.2             # Friction error reduction (stabilizes friction)
-        # )
-        
         # Clean, professional camera setup
         p.resetDebugVisualizerCamera(
             cameraDistance=0.6,        # Closer view for better detail
@@ -438,7 +390,7 @@ class BallBalanceComparison:
         """Reset ball to initial position - modified for camera modes"""
         if self.camera_mode == "real":
             print("ℹ️ Real camera mode - please manually position the ball on the table")
-            input("   Press Enter when ball is positioned...")
+            #input("   Press Enter when ball is positioned...")
             return
 
         if position is None:
@@ -451,13 +403,13 @@ class BallBalanceComparison:
                 ]
                 print(f"Ball reset to random position: ({position[0]:.2f}, {position[1]:.2f})")
             else:
-                position = [0.06, 0.08, 0.5]
+                position = [-0.1, 0.00, 0.5]
                 print(f"Ball reset to fixed position: ({position[0]:.2f}, {position[1]:.2f})")
         
         # 🛡️ Ensure minimum height above the table to avoid bad spawns
         if position[2] < 0.2:
             print(f"Ball Z too low ({position[2]:.2f}), adjusting to safe height.")
-            position[2] = 0.5  # safe above-table height
+            position[2] = 0.3  # safe above-table height
 
         if hasattr(self, 'ball_id'):
             p.removeBody(self.ball_id)
@@ -537,11 +489,20 @@ class BallBalanceComparison:
         
         # Ball position marker
         ball_marker, = ax_table.plot(0, 0, 'o', color='red', markersize=8)
+
+        # Ball target position marker
+        target_marker, = ax_table.plot(
+            self.setpoint_x, self.setpoint_y, 'o',
+            markerfacecolor='none', markeredgecolor='green', markersize=12, markeredgewidth=2
+        )
+        
+        # Add legend for clarity
+        ax_table.legend(loc='upper right', fontsize=9)
         
         # Control effort and angles combined
         ax_control = fig.add_subplot(gs[1, :])
         ax_control.set_title('Control Actions & Table Angles', fontweight='bold')
-        ax_control.set_ylim(-0.06, 0.06)
+        ax_control.set_ylim(-0.2, 0.2)
         
         # Combined bars for actions and angles
         x_pos = np.arange(4)
@@ -570,9 +531,15 @@ class BallBalanceComparison:
                 
                 # Update ball position (most frequent update)
                 ball_marker.set_data([data['ball_x']], [data['ball_y']])
+
+                # Update target position marker
+                target_marker.set_data([data['setpoint_x']], [data['setpoint_y']])
                 
                 # Update combined bars (actions and angles) - only if changed significantly
-                heights = [data['action'][0], data['action'][1], data['pitch'], data['roll']]
+                if data['imu']['connected']:
+                    heights = [data['action'][0], data['action'][1], np.radians(data['imu']['pitch']), np.radians(data['imu']['roll'])]
+                else:
+                    heights = [data['action'][0], data['action'][1], data['pitch'], data['roll']]
                 for i, (bar, height) in enumerate(zip(combined_bars, heights)):
                     bar.set_height(height)
                     
@@ -603,17 +570,7 @@ class BallBalanceComparison:
                         f"Action: [{data['action'][0]:+.3f}, {data['action'][1]:+.3f}] | Magnitude: {action_mag:.4f}",
                         f"Table: Pitch {data['pitch']:+.3f} | Roll {data['roll']:+.3f}"
                     ]
-                    
-                    # Add servo uncertainty info if enabled
-                    if 'servo_uncertainty' in data and data['servo_uncertainty']['enabled']:
-                        servo_data = data['servo_uncertainty']
-                        pitch_error_deg = np.degrees(servo_data['pitch_error'])
-                        roll_error_deg = np.degrees(servo_data['roll_error'])
-                        status_lines.append(
-                            f"🔧 Servo Uncertainty: P_err {pitch_error_deg:+.2f}° R_err {roll_error_deg:+.2f}° | "
-                            f"Actual: P{np.degrees(servo_data['actual_pitch']):+.1f}° R{np.degrees(servo_data['actual_roll']):+.1f}°"
-                        )
-                    
+
                     # Add IMU feedback if connected
                     if data['imu']['connected']:
                         imu_pitch_diff = data['imu']['pitch'] - np.degrees(data['pitch'])
@@ -632,7 +589,7 @@ class BallBalanceComparison:
                 print(f"Dashboard update error: {e}")
             
             # Return all artists for blitting (much faster rendering)
-            return [ball_marker] + list(combined_bars) + [status_text]
+            return [ball_marker] + list(combined_bars) + [status_text] + [target_marker]
         
         # Set up animation with optimized update rate for smoothness vs performance
         ani = FuncAnimation(fig, update_dashboard, interval=100, blit=True, cache_frame_data=False)
@@ -643,21 +600,10 @@ class BallBalanceComparison:
         
         print("Dashboard window closed")
     
-    def _update_visual_data(self, ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step, imu_feedback=None):
+    def _update_visual_data(self, ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step, setpoint_x, setpoint_y, imu_feedback=None):
         """Send data to visual thread via queue (completely thread-safe)"""
         if self.enable_visuals:
             try:
-                # Include servo uncertainty data for visualization
-                servo_uncertainty_data = {
-                    'enabled': self.servo_uncertainty['enable'],
-                    'commanded_pitch': self.table_pitch,
-                    'commanded_roll': self.table_roll,
-                    'actual_pitch': getattr(self, 'actual_table_pitch', self.table_pitch),
-                    'actual_roll': getattr(self, 'actual_table_roll', self.table_roll),
-                    'pitch_error': getattr(self, 'actual_table_pitch', self.table_pitch) - self.table_pitch,
-                    'roll_error': getattr(self, 'actual_table_roll', self.table_roll) - self.table_roll,
-                }
-                
                 data = {
                     'method': self.control_method,
                     'step': step,
@@ -665,12 +611,13 @@ class BallBalanceComparison:
                     'ball_y': ball_y,
                     'ball_vx': ball_vx,
                     'ball_vy': ball_vy,
+                    'setpoint_x': setpoint_x,
+                    'setpoint_y': setpoint_y,
                     'distance': distance,
                     'pitch': self.table_pitch,
                     'roll': self.table_roll,
                     'action': control_action if control_action else [0.0, 0.0],
                     'imu': imu_feedback if imu_feedback else {'connected': False, 'pitch': 0.0, 'roll': 0.0, 'heading': 0.0},
-                    'servo_uncertainty': servo_uncertainty_data
                 }
                 # Try to put data, if queue is full, remove oldest and add new
                 try:
@@ -840,151 +787,17 @@ class BallBalanceComparison:
         
         return pitch_rad, roll_rad
     
-    def apply_servo_uncertainty(self, commanded_pitch, commanded_roll):
-        """
-        Apply realistic servo uncertainty and mechanical imperfections
-        
-        This simulates real-world servo behavior including:
-        - Backlash/dead zone
-        - Response delays
-        - Position noise
-        - Saturation effects
-        - Hysteresis
-        - Mechanical compliance
-        
-        Returns actual achieved angles (with uncertainty)
-        """
-        if not self.servo_uncertainty['enable']:
-            return commanded_pitch, commanded_roll
-        
-        # 1. RESPONSE DELAY - Commands take time to execute
-        # Add current commands to delay buffer
-        self.servo_state['delay_buffer_pitch'].append(commanded_pitch)
-        self.servo_state['delay_buffer_roll'].append(commanded_roll)
-        
-        # Keep buffer at correct size
-        delay_steps = self.servo_uncertainty['response_delay_steps']
-        if len(self.servo_state['delay_buffer_pitch']) > delay_steps:
-            self.servo_state['delay_buffer_pitch'].pop(0)
-            self.servo_state['delay_buffer_roll'].pop(0)
-        
-        # Use delayed command if buffer is full, otherwise use current
-        if len(self.servo_state['delay_buffer_pitch']) >= delay_steps:
-            delayed_pitch = self.servo_state['delay_buffer_pitch'][0]
-            delayed_roll = self.servo_state['delay_buffer_roll'][0]
-        else:
-            delayed_pitch = commanded_pitch
-            delayed_roll = commanded_roll
-        
-        # 2. BACKLASH/DEAD ZONE - Must overcome mechanical slack
-        backlash_rad = np.radians(self.servo_uncertainty['backlash_degrees'])
-        
-        def apply_backlash(commanded, actual, previous):
-            movement = commanded - previous
-            if abs(movement) < backlash_rad:
-                # Movement too small to overcome backlash - no change
-                return actual
-            else:
-                # Movement large enough - but reduced by backlash amount
-                if movement > 0:
-                    return actual + max(0, movement - backlash_rad)
-                else:
-                    return actual + min(0, movement + backlash_rad)
-        
-        pitch_after_backlash = apply_backlash(
-            delayed_pitch, 
-            self.servo_state['actual_pitch'], 
-            self.servo_state['previous_pitch']
-        )
-        roll_after_backlash = apply_backlash(
-            delayed_roll, 
-            self.servo_state['actual_roll'], 
-            self.servo_state['previous_roll']
-        )
-        
-        # 3. HYSTERESIS - Different behavior based on movement direction
-        hysteresis = np.radians(self.servo_uncertainty['hysteresis_strength'])
-        
-        def apply_hysteresis(target, actual, last_direction):
-            movement_direction = np.sign(target - actual)
-            
-            if movement_direction != last_direction and movement_direction != 0:
-                # Direction changed - apply hysteresis offset
-                if movement_direction > 0:
-                    return target - hysteresis
-                else:
-                    return target + hysteresis
-            return target
-        
-        # Update movement directions
-        pitch_direction = np.sign(delayed_pitch - self.servo_state['actual_pitch'])
-        roll_direction = np.sign(delayed_roll - self.servo_state['actual_roll'])
-        
-        pitch_with_hysteresis = apply_hysteresis(
-            pitch_after_backlash, 
-            self.servo_state['actual_pitch'],
-            self.servo_state['last_direction_pitch']
-        )
-        roll_with_hysteresis = apply_hysteresis(
-            roll_after_backlash, 
-            self.servo_state['actual_roll'],
-            self.servo_state['last_direction_roll']
-        )
-        
-        # 4. SATURATION EFFECTS - Non-linear response near limits
-        servo_limit = 0.0559  # ±3.2° servo limit
-        softness = self.servo_uncertainty['saturation_softness']
-        
-        def soft_saturation(angle, limit, softness):
-            """Smooth saturation instead of hard clipping"""
-            if abs(angle) < limit * softness:
-                return angle  # Linear region
-            else:
-                # Soft saturation region
-                sign = np.sign(angle)
-                excess = abs(angle) - limit * softness
-                max_excess = limit * (1 - softness)
-                # Smooth transition using tanh
-                return sign * (limit * softness + max_excess * np.tanh(excess / max_excess))
-        
-        pitch_saturated = soft_saturation(pitch_with_hysteresis, servo_limit, softness)
-        roll_saturated = soft_saturation(roll_with_hysteresis, servo_limit, softness)
-        
-        # 5. COMPLIANCE - Servo "gives" under load (table weight)
-        compliance = self.servo_uncertainty['compliance_factor']
-        pitch_compliant = pitch_saturated * (1 - compliance)
-        roll_compliant = roll_saturated * (1 - compliance)
-        
-        # 6. POSITION NOISE - Random deviations
-        noise_std = np.radians(self.servo_uncertainty['position_noise_std'])
-        pitch_noise = np.random.normal(0, noise_std)
-        roll_noise = np.random.normal(0, noise_std)
-        
-        # Final actual positions
-        actual_pitch = pitch_compliant + pitch_noise
-        actual_roll = roll_compliant + roll_noise
-        
-        # Update servo state for next iteration
-        self.servo_state['commanded_pitch'] = commanded_pitch
-        self.servo_state['commanded_roll'] = commanded_roll
-        self.servo_state['previous_pitch'] = self.servo_state['actual_pitch']
-        self.servo_state['previous_roll'] = self.servo_state['actual_roll']
-        self.servo_state['actual_pitch'] = actual_pitch
-        self.servo_state['actual_roll'] = actual_roll
-        self.servo_state['last_direction_pitch'] = pitch_direction
-        self.servo_state['last_direction_roll'] = roll_direction
-        
-        return actual_pitch, actual_roll
     
     def load_rl_model(self):
         """Load trained RL model"""
         try:
-            from stable_baselines3 import PPO
+            from stable_baselines3 import SAC
             
             # Try multiple model paths
             model_paths = [
-                "models/best_model",  # Check main models folder first (for backward compatibility)
+                #"models/best_model",  # Check main models folder first (for backward compatibility)
                 "reinforcement_learning/models/best_model"  # New location
+                #"reinforcement_learning/SAC_models/best_model"  # Alternative path
             ]
             
             for model_path in model_paths:
@@ -992,7 +805,7 @@ class BallBalanceComparison:
                 print(f"Checking for model at: {full_path}")
                 if os.path.exists(full_path):
                     try:
-                        self.rl_model = PPO.load(model_path)
+                        self.rl_model = SAC.load(model_path)
                         print(f"✅ RL model loaded successfully from {model_path}")
                         return
                     except Exception as e:
@@ -1068,6 +881,32 @@ class BallBalanceComparison:
         
         return observation
     
+    def set_setpoint(self, x, y):
+        self.setpoint_x = x
+        self.setpoint_y = y
+        if hasattr(self, 'camera_interface') and self.camera_interface:
+            self.camera_interface.set_target_position(x, y)  # Update camera interface if applicable
+        print(f"Setpoint updated: ({x:.3f}, {y:.3f})")
+
+        # Immediately update dashboard with new setpoint (if visuals enabled)
+        if hasattr(self, 'enable_visuals') and self.enable_visuals:
+            try:
+                observation = self.get_observation()
+                ball_x, ball_y, ball_vx, ball_vy = observation[0], observation[1], observation[2], observation[3]
+                distance = np.sqrt((ball_x - self.setpoint_x)**2 + (ball_y - self.setpoint_y)**2)
+                control_action = [self.table_pitch, self.table_roll]
+                step = getattr(self, 'step_count', 0)
+                imu_feedback = self.get_imu_feedback() if hasattr(self, 'get_imu_feedback') else None
+                self._update_visual_data(
+                    ball_x, ball_y, ball_vx, ball_vy, distance, control_action, step,
+                    self.setpoint_x, self.setpoint_y, imu_feedback
+                )
+            except Exception as e:
+                print(f"[set_setpoint] Visual update failed: {e}")
+
+    def set_circle_radius(self, radius):
+        self._circle_radius = radius
+    
     def pid_control(self, ball_x, ball_y, ball_vx, ball_vy):
         """PD control logic (no integral term needed for ball balancing)"""
         # Use control timestep for PID updates
@@ -1075,6 +914,9 @@ class BallBalanceComparison:
         # Remove dead zone for maximum responsiveness - every movement should be corrected
         ball_x_corrected = ball_x
         ball_y_corrected = ball_y
+
+        ball_x_corrected = ball_x - self.setpoint_x
+        ball_y_corrected = ball_y - self.setpoint_y
         
         if self.camera_mode in ["hybrid", "real"]:
             # In hybrid and real modes, coordinate system is swapped to match camera
@@ -1084,7 +926,8 @@ class BallBalanceComparison:
             # In simulation mode, use original mapping
             pitch_angle = -self.pitch_pid.update(ball_y_corrected, self.control_dt)  # ball_y controls pitch
             roll_angle = self.roll_pid.update(ball_x_corrected, self.control_dt)     # ball_x controls roll
-        
+
+
         return pitch_angle, roll_angle
     
     def rl_control(self, observation):
@@ -1094,9 +937,13 @@ class BallBalanceComparison:
         
         action, _ = self.rl_model.predict(observation, deterministic=True)
         # Only print RL actions occasionally to avoid spam
-        if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
-            print(f"RL action: {action}")
-        return action[0], action[1]  # pitch_change, roll_change
+        # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+        print(f"RL action: {action}")
+        if self.camera_mode in ["hybrid", "real"]:
+            action = [-action[1], -action[0]]
+        else:
+            action = action[0], action[1]  # Reverse order for simulation
+        return action  # pitch_change, roll_change
     
     def run_simulation(self):
         """Main simulation loop with configurable control rate"""
@@ -1109,18 +956,9 @@ class BallBalanceComparison:
         print("  'f' - Toggle fixed/random ball position")
         print("  'p' - Switch to PID control")
         print("  'l' - Switch to RL control")
-        print("  'u' - Toggle servo uncertainty on/off")
         if self.imu_connected:
             print("  'c' - Calibrate IMU offsets (make table level first!)")
         print("  'q' - Quit")
-        
-        # Show servo uncertainty status
-        uncertainty_status = "🔧 ENABLED" if self.servo_uncertainty['enable'] else "⚪ DISABLED"
-        print(f"Servo uncertainty: {uncertainty_status} (Press 'u' to toggle)")
-        if self.servo_uncertainty['enable']:
-            print(f"   Backlash: ±{self.servo_uncertainty['backlash_degrees']:.2f}°, "
-                  f"Delay: {self.servo_uncertainty['response_delay_steps']} steps, "
-                  f"Noise: ±{self.servo_uncertainty['position_noise_std']:.2f}°")
         
         if self.imu_control:
             print(f"🧭 IMU CONTROL MODE - Table follows IMU movements")
@@ -1131,7 +969,107 @@ class BallBalanceComparison:
             print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
         physics_step_count = 0  # Track physics steps
+
+        # Keyboard callback to toggle circle mode (e.g., on 'c' key release)
+        def on_i_release(e):
+            self._circle_mode = not self._circle_mode  # Toggle on/off
+
         
+
+        def on_w_release(e):
+            self.setpoint_y += 0.02
+            self.set_setpoint(self.setpoint_x, self.setpoint_y)
+
+        def on_s_release(e):
+            self.setpoint_y -= 0.02
+            self.set_setpoint(self.setpoint_x, self.setpoint_y)
+
+        def on_a_release(e):
+            self.setpoint_x -= 0.02
+            self.set_setpoint(self.setpoint_x, self.setpoint_y)
+
+        def on_d_release(e):
+            self.setpoint_x += 0.02
+            self.set_setpoint(self.setpoint_x, self.setpoint_y)
+
+        def on_7_release(e):
+            self.set_setpoint(-0.08, 0.08)
+
+        def on_9_release(e):
+            self.set_setpoint(0.08, 0.08)
+
+        def on_3_release(e):
+            self.set_setpoint(0.08, -0.08)
+
+        def on_1_release(e):
+            self.set_setpoint(-0.08, -0.08)
+
+        def on_5_release(e):
+            self.set_setpoint(0.0, 0.0)
+
+        def on_4_release(e):
+            self.set_setpoint(-0.08, 0.0)
+
+        def on_6_release(e):
+            self.set_setpoint(0.08, 0.0)
+
+        def on_8_release(e):
+            self.set_setpoint(0.0, 0.08)
+
+        def on_2_release(e):
+            self.set_setpoint(0.0, -0.08)
+
+        def on_o_release(e):
+            self.set_circle_radius(self._circle_radius + 0.01)
+            print(f"Circle radius: {self._circle_radius:.2f} m")
+
+        def on_u_release(e):
+            self.set_circle_radius(self._circle_radius - 0.01)  
+            print(f"Circle radius: {self._circle_radius:.2f} m")
+
+        def on_k_release(e):
+            if self._invert_circle_direction:
+                self._invert_circle_direction = False
+            else:
+                self._invert_circle_direction = True
+            print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}")
+
+        def on_y_release(e):
+            self._circle_speed += 0.1
+            print(f"Circle speed: {self._circle_speed}")
+
+        def on_p_release(e):
+            self._circle_speed -= 0.1
+            print(f"Circle speed: {self._circle_speed}")
+
+        #corners and middle
+        keyboard.on_release_key('7', on_7_release)
+        keyboard.on_release_key('9', on_9_release)
+        keyboard.on_release_key('3', on_3_release)
+        keyboard.on_release_key('1', on_1_release)
+        keyboard.on_release_key('5', on_5_release)
+
+        #middle parts
+        keyboard.on_release_key('4',on_4_release)
+        keyboard.on_release_key('6', on_6_release)
+        keyboard.on_release_key('8', on_8_release)
+        keyboard.on_release_key('2', on_2_release)
+
+        # circle controls
+        keyboard.on_release_key('i', on_i_release)
+        keyboard.on_release_key('u', on_u_release)
+        keyboard.on_release_key('o', on_o_release)
+        keyboard.on_release_key('k', on_k_release)
+        keyboard.on_release_key('y', on_y_release)
+        keyboard.on_release_key('p', on_p_release)
+
+        #setpoint moving
+        keyboard.on_release_key('w', on_w_release)
+        keyboard.on_release_key('s', on_s_release)
+        keyboard.on_release_key('a', on_a_release)
+        keyboard.on_release_key('d', on_d_release)
+
+
         while True:
             # Only run control logic at the specified control frequency
             if physics_step_count % self.physics_steps_per_control == 0:
@@ -1165,7 +1103,6 @@ class BallBalanceComparison:
                             pitch_rad = np.radians(self.imu_pitch)
                             roll_rad = np.radians(self.imu_roll)
                         
-                        print(pitch_rad, roll_rad)
                         # Set simulation table to match the TRUE physical table angles
                         self.table_pitch = pitch_rad
                         self.table_roll = roll_rad
@@ -1180,6 +1117,12 @@ class BallBalanceComparison:
                         self.table_pitch = 0.0
                         self.table_roll = 0.0
                         control_action = [0.0, 0.0]
+                elif self.control_method == "lqr":
+                    pitch_angle, roll_angle = self.lqr_controller.control(ball_x, ball_y, ball_vx, ball_vy)
+                    # For LQR, these are absolute angles
+                    self.table_pitch = pitch_angle
+                    self.table_roll = roll_angle
+                    control_action = [pitch_angle, roll_angle]
                 elif self.control_method == "pid":
                     pitch_angle, roll_angle = self.pid_control(ball_x, ball_y, ball_vx, ball_vy)
                     
@@ -1189,6 +1132,7 @@ class BallBalanceComparison:
                         # Get actual table angles from IMU
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
                         
+                        
                         # Calculate angle errors (commanded vs actual)
                         pitch_error = pitch_angle - actual_pitch
                         roll_error = roll_angle - actual_roll
@@ -1196,16 +1140,16 @@ class BallBalanceComparison:
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
                         # More responsive gain to complement PID control and speed up convergence
-                        pitch_angle -= 0.1 * pitch_error  # More responsive correction (was 0.05)
-                        roll_angle -= 0.1 * roll_error
+                        pitch_angle -= 0.08 * pitch_error  # More responsive correction (was 0.05)
+                        roll_angle -= 0.08 * roll_error
                 
                         
                         # Store feedback info for display
                         self.imu_feedback_error = (pitch_error, roll_error)
                     
                     # Ensure final angles stay within servo limits after IMU correction
-                    pitch_angle = np.clip(pitch_angle, -0.0559, 0.0559)  # ±3.2°
-                    roll_angle = np.clip(roll_angle, -0.0559, 0.0559)   # ±3.2°
+                    pitch_angle = np.clip(pitch_angle, -self.control_output_limit, self.control_output_limit)  # ±3.2°
+                    roll_angle = np.clip(roll_angle, -self.control_output_limit, self.control_output_limit)   # ±3.2°
                 
                     
                     # For PID, these are absolute angles
@@ -1239,6 +1183,9 @@ class BallBalanceComparison:
                         # Use corrected angles
                         self.table_pitch = corrected_pitch
                         self.table_roll = corrected_roll
+
+                        self.table_pitch = new_table_pitch
+                        self.table_roll = new_table_roll
                     else:
                         # No IMU feedback - use RL action directly
                         self.table_pitch = new_table_pitch
@@ -1248,44 +1195,46 @@ class BallBalanceComparison:
                     self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
                     control_action = [pitch_change, roll_change]
                 
-                # Update table orientation
-                # 🔧 Apply servo uncertainty to get realistic actual table angles
-                actual_pitch, actual_roll = self.apply_servo_uncertainty(self.table_pitch, self.table_roll)
-                
                 if self.camera_mode == "real":
                     # In real camera mode, no PyBullet simulation to update
                     pass
                 elif self.camera_mode == "hybrid":
                     # In hybrid mode, match real-world right-handed coordinate system
-                    # Use ACTUAL servo positions (with uncertainty) for simulation
-                    quat = p.getQuaternionFromEuler([actual_roll, actual_pitch, 0])
+                    quat = p.getQuaternionFromEuler([self.table_roll, self.table_pitch, 0])
                     p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 else:
                     # In simulation mode, use original PyBullet convention for PID compatibility
-                    # Use ACTUAL servo positions (with uncertainty) for simulation
-                    quat = p.getQuaternionFromEuler([actual_pitch, actual_roll, 0])
+                    quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
                     p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 
                 # Send COMMANDED angles to servo controller (real hardware gets commands)
                 if self.servo_controller:
                     self.servo_controller.set_table_angles(self.table_pitch, self.table_roll)
                 
-                # 📊 Store actual vs commanded for monitoring/debugging
-                self.actual_table_pitch = actual_pitch
-                self.actual_table_roll = actual_roll
-                
                 # Get IMU feedback for comparison/monitoring
                 imu_feedback = self.get_imu_feedback()
                 
                 # Update visual data (thread-safe) - every 10 steps for smoother updates
-                if self.step_count % 10 == 0:
+                if self.step_count % 1 == 0:
                     distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, imu_feedback)
+                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, self.setpoint_x, self.setpoint_y, imu_feedback)
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
                 ball_fell = distance_from_center > 0.125 and ball_z < 0.5
+
+                if self._circle_mode:
+                    # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
+                    increment = self._circle_speed * 2 * np.pi / 60
+                    if self._invert_circle_direction:
+                        self._circle_angle -= increment
+                    else:
+                        self._circle_angle += increment
+                    radius = self._circle_radius  # or whatever radius you want
+                    self.setpoint_x = radius * np.cos(self._circle_angle)
+                    self.setpoint_y = radius * np.sin(self._circle_angle)
+                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
 
                 if ball_fell and not self._ball_reset:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")
@@ -1395,18 +1344,6 @@ class BallBalanceComparison:
                                     print("❌ IMU calibration failed!")
                             else:
                                 print("❌ IMU not connected - cannot calibrate")
-                        elif key == ord('u'):
-                            # Toggle servo uncertainty
-                            self.servo_uncertainty['enable'] = not self.servo_uncertainty['enable']
-                            status = "🔧 ENABLED" if self.servo_uncertainty['enable'] else "⚪ DISABLED"
-                            print(f"Servo uncertainty: {status}")
-                            if self.servo_uncertainty['enable']:
-                                print(f"   Added realistic servo imperfections for better RL training")
-                                print(f"   Backlash: ±{self.servo_uncertainty['backlash_degrees']:.2f}°, "
-                                      f"Delay: {self.servo_uncertainty['response_delay_steps']} steps, "
-                                      f"Noise: ±{self.servo_uncertainty['position_noise_std']:.2f}°")
-                            else:
-                                print(f"   Perfect servo response (unrealistic but good for debugging)")
                         elif key == ord('q'):
                             print("Quitting...")
                             if self.enable_visuals:
@@ -1421,10 +1358,13 @@ class BallBalanceComparison:
                             if self.imu_interface:
                                 self.imu_interface.cleanup()
                             return
+                       
             else:
                 # In real mode, handle keyboard input differently or use a simple loop check
                 # For now, just provide terminal-based control
-                pass
+                if keyboard.is_pressed('q'):
+                    print("Quitting...")
+                    break
             
             # Always step physics at physics frequency (only if PyBullet is running)
             if self.camera_mode != "real":
@@ -1434,11 +1374,12 @@ class BallBalanceComparison:
                 # In real mode, just sleep at control frequency
                 time.sleep(self.control_dt)
             physics_step_count += 1
+    
 
 
 def main():
     parser = argparse.ArgumentParser(description="Ball Balancing Control Comparison")
-    parser.add_argument("--control", choices=["pid", "rl"], default="pid", 
+    parser.add_argument("--control", choices=["pid", "rl","lqr"], default="pid", 
                        help="Control method to start with")
     parser.add_argument("--freq", type=int, default=50,
                        help="Control frequency in Hz (default: 50)")
@@ -1543,6 +1484,9 @@ def main():
         simulator.run_simulation()
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
+        if hasattr(simulator, "servo_controller") and simulator.servo_controller:
+            print("Returning table to level (0, 0)...")
+            simulator.servo_controller.set_table_angles(0.0, 0.0)
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
