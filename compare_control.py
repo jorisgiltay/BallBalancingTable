@@ -58,6 +58,9 @@ class BallBalanceComparison:
         self._invert_circle_direction = True
         self._circle_speed = 1.0
 
+
+
+
         # TIMING PARAMETERS
         self.physics_freq = 240  # Hz - physics simulation frequency
         self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
@@ -165,6 +168,8 @@ class BallBalanceComparison:
         # State tracking
         self.table_pitch = 0.0  # Commanded table angles
         self.table_roll = 0.0
+        self.table_pitch_target = 0.0
+        self.table_roll_target = 0.0
         self.prev_ball_pos = None  # For velocity estimation  
         self.step_count = 0
         self.randomize_ball = True  # Start with randomized positions
@@ -370,7 +375,7 @@ class BallBalanceComparison:
         self.table_id = p.createMultiBody(1.0, table_shape, table_visual, self.table_start_pos)
         
         # Ball
-        self.ball_radius = 0.02
+        self.ball_radius = 0.0075
         self.reset_ball()
         
         # Add simple coordinate system axes
@@ -415,7 +420,7 @@ class BallBalanceComparison:
             p.removeBody(self.ball_id)
 
         self.ball_id = p.createMultiBody(
-            baseMass=0.0027,  # 
+            baseMass=0.002,  # 
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
             baseVisualShapeIndex=p.createVisualShape(
                 p.GEOM_SPHERE,
@@ -429,23 +434,23 @@ class BallBalanceComparison:
         # 🎯 CRITICAL: Apply realistic physics parameters for PLEXIGLASS table
         # Plexiglass is much more slippery than wood/metal surfaces
         p.changeDynamics(
-            self.ball_id, -1,  # -1 means base link
-            lateralFriction=0.15,       # Much lower friction - plexiglass is slippery!
-            rollingFriction=0.005,      # Very low rolling resistance on smooth plexiglass
-            spinningFriction=0.001,     # Minimal spinning friction on smooth surface
-            restitution=0.4,            # Ping pong balls bounce more on hard plexiglass
-            linearDamping=0.02,         # Minimal air resistance for responsiveness
-            angularDamping=0.01,        # Very low rotational damping for plexiglass
-            contactStiffness=3000,      # Higher stiffness for hard plexiglass surface
-            contactDamping=20           # Lower contact damping for responsive motion
+            self.ball_id, -1,
+            lateralFriction=0.22,         # Slightly higher for more ground resistance
+            rollingFriction=0.05,        # Increase this to resist rolling motion
+            spinningFriction=0.05,      # Increase to resist spin
+            linearDamping=0.1,           # Simulates air resistance / velocity damping
+            angularDamping=0.08,         # Slows down spinning over time
+            restitution=0.3,             # Lower if you want less bounce
+            contactStiffness=2500,       # Already OK for plexiglass
+            contactDamping=80            # Increase to dissipate energy on contact
         )
         
         # Plexiglass table surface properties
         p.changeDynamics(
             self.table_id, -1,
-            lateralFriction=0.15,       # Match ball friction - smooth plexiglass
-            rollingFriction=0.005,      # Very smooth surface
-            restitution=0.4             # Hard surface with some bounce
+            lateralFriction=0.22,       # Match the ball
+            rollingFriction=0.05,
+            restitution=0.3            # Match ball bounce
         )
 
         # Reset system
@@ -855,7 +860,9 @@ class BallBalanceComparison:
         observation = np.array([
             ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
-        
+
+        print(f"Ball: x={observation[0]:.3f}, y={observation[1]:.3f}, vx={observation[2]:.3f}, vy={observation[3]:.3f} , pitch={observation[4]:.3f}, roll={observation[5]:.3f}")
+
         return observation
     
     def _get_simulation_observation(self):
@@ -878,6 +885,8 @@ class BallBalanceComparison:
         observation = np.array([
             ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
         ], dtype=np.float32)
+
+        print(f"Ball: x={observation[0]:.3f}, y={observation[1]:.3f}, vx={observation[2]:.3f}, vy={observation[3]:.3f} , pitch={observation[4]:.3f}, roll={observation[5]:.3f}")
         
         return observation
     
@@ -918,14 +927,12 @@ class BallBalanceComparison:
         ball_x_corrected = ball_x - self.setpoint_x
         ball_y_corrected = ball_y - self.setpoint_y
         
-        if self.camera_mode in ["hybrid", "real"]:
-            # In hybrid and real modes, coordinate system is swapped to match camera
-            pitch_angle = -self.pitch_pid.update(ball_x_corrected, self.control_dt)  # ball_x controls pitch
-            roll_angle = self.roll_pid.update(ball_y_corrected, self.control_dt)     # ball_y controls roll
-        else:
-            # In simulation mode, use original mapping
-            pitch_angle = -self.pitch_pid.update(ball_y_corrected, self.control_dt)  # ball_y controls pitch
-            roll_angle = self.roll_pid.update(ball_x_corrected, self.control_dt)     # ball_x controls roll
+
+        # In hybrid and real modes, coordinate system is swapped to match camera
+        pitch_angle = -self.pitch_pid.update(ball_x_corrected, self.control_dt)  # ball_x controls pitch
+        roll_angle = self.roll_pid.update(ball_y_corrected, self.control_dt)     # ball_y controls roll
+
+
 
 
         return pitch_angle, roll_angle
@@ -1153,8 +1160,12 @@ class BallBalanceComparison:
                 
                     
                     # For PID, these are absolute angles
-                    self.table_pitch = pitch_angle
-                    self.table_roll = roll_angle
+                    if self.camera_mode == "real":
+                        self.table_pitch = pitch_angle
+                        self.table_roll = roll_angle
+                    else:
+                        self.table_pitch_target = pitch_angle
+                        self.table_roll_target = roll_angle
                     control_action = [pitch_angle, roll_angle]
                 else:  # RL
                     pitch_change, roll_change = self.rl_control(observation)
@@ -1200,11 +1211,22 @@ class BallBalanceComparison:
                     pass
                 elif self.camera_mode == "hybrid":
                     # In hybrid mode, match real-world right-handed coordinate system
-                    quat = p.getQuaternionFromEuler([self.table_roll, self.table_pitch, 0])
+                    quat = p.getQuaternionFromEuler([-self.table_roll, -self.table_pitch, 0])
                     p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 else:
                     # In simulation mode, use original PyBullet convention for PID compatibility
-                    quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
+                    # Smooth motion: simulate real servo lag
+                    servo_speed = 0.02  # radians per control step (~1.15 deg)
+
+                    pitch_error = self.table_pitch_target - self.table_pitch
+                    roll_error = self.table_roll_target - self.table_roll
+
+                    pitch_step = np.clip(pitch_error, -servo_speed, servo_speed)
+                    roll_step = np.clip(roll_error, -servo_speed, servo_speed)
+
+                    self.table_pitch += pitch_step
+                    self.table_roll += roll_step
+                    quat = p.getQuaternionFromEuler([-self.table_roll, -self.table_pitch, 0])
                     p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
                 
                 # Send COMMANDED angles to servo controller (real hardware gets commands)
