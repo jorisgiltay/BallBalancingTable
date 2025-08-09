@@ -400,7 +400,7 @@ class RealSenseCameraInterface:
     def set_target(self, x: float, y: float):
         self.target_x = x
         self.target_y = y
-        print(f"🎯 Target position set to: ({x:.3f}, {y:.3f})")
+        #print(f"🎯 Target position set to: ({x:.3f}, {y:.3f})")
     
     def stop_continuous_capture(self):
         """Stop continuous capture"""
