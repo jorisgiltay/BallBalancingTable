@@ -1,0 +1,86 @@
+{
+  "timestamp": "20250808_082411",
+  "calibration_type": "blue_markers_position_based",
+  "marker_colors": [
+    "Blue",
+    "Blue",
+    "Blue",
+    "Blue"
+  ],
+  "marker_positions": [
+    "Top-Left",
+    "Top-Right",
+    "Bottom-Left",
+    "Bottom-Right"
+  ],
+  "marker_ids": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "base_plate_size_cm": 25,
+  "table_size_cm": 25,
+  "marker_size_cm": 2,
+  "valid_samples": 20,
+  "corner_pixels": [
+    [
+      183.0500030517578,
+      98.0
+    ],
+    [
+      469.04998779296875,
+      96.05000305175781
+    ],
+    [
+      186.0,
+      386.8500061035156
+    ],
+    [
+      476.0,
+      383.0
+    ]
+  ],
+  "images_saved": [
+    "calibration_data/calibration_frame_1_1754634240768.jpg",
+    "calibration_data/calibration_frame_2_1754634241292.jpg",
+    "calibration_data/calibration_frame_3_1754634241818.jpg",
+    "calibration_data/calibration_frame_4_1754634242345.jpg",
+    "calibration_data/calibration_frame_5_1754634242871.jpg",
+    "calibration_data/calibration_frame_6_1754634243399.jpg",
+    "calibration_data/calibration_frame_7_1754634243931.jpg",
+    "calibration_data/calibration_frame_8_1754634244465.jpg",
+    "calibration_data/calibration_frame_9_1754634244992.jpg",
+    "calibration_data/calibration_frame_10_1754634245515.jpg",
+    "calibration_data/calibration_frame_11_1754634246051.jpg",
+    "calibration_data/calibration_frame_12_1754634246576.jpg",
+    "calibration_data/calibration_frame_13_1754634247103.jpg",
+    "calibration_data/calibration_frame_14_1754634247635.jpg",
+    "calibration_data/calibration_frame_15_1754634248165.jpg",
+    "calibration_data/calibration_frame_16_1754634248689.jpg",
+    "calibration_data/calibration_frame_17_1754634249212.jpg",
+    "calibration_data/calibration_frame_18_1754634249736.jpg",
+    "calibration_data/calibration_frame_19_1754634250260.jpg",
+    "calibration_data/calibration_frame_20_1754634250784.jpg"
+  ],
+  "camera_resolution": [
+    640,
+    480
+  ],
+  "image_orientation": "flipped_180_degrees",
+  "color_ranges": {
+    "blue_only": {
+      "name": "Blue",
+      "lower": [
+        90,
+        50,
+        50
+      ],
+      "upper": [
+        130,
+        255,
+        255
+      ]
+    }
+  }
+}
