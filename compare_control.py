@@ -807,7 +807,7 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                #"models/best_model",  # Check main models folder first (for backward compatibility)
+                "models/best_model",  # Check main models folder first (for backward compatibility)
                 "reinforcement_learning/models/best_model"  # New location
                 #"reinforcement_learning/SAC_models/best_model"  # Alternative path
             ]
@@ -898,7 +898,8 @@ class BallBalanceComparison:
         self.setpoint_y = y
         if hasattr(self, 'camera_interface') and self.camera_interface:
             self.camera_interface.set_target_position(x, y)  # Update camera interface if applicable
-        print(f"Setpoint updated: ({x:.3f}, {y:.3f})")
+        if(not self._circle_mode):
+            print(f"Setpoint updated: ({x:.3f}, {y:.3f})")
 
         # Immediately update dashboard with new setpoint (if visuals enabled)
         if hasattr(self, 'enable_visuals') and self.enable_visuals:
@@ -1081,6 +1082,7 @@ class BallBalanceComparison:
         while True:
             # Only run control logic at the specified control frequency
             if physics_step_count % self.physics_steps_per_control == 0:
+                start_time = time.perf_counter()
                 # Get observation (includes position + estimated velocity)
                 observation = self.get_observation()
 
@@ -1392,12 +1394,18 @@ class BallBalanceComparison:
             # Always step physics at physics frequency (only if PyBullet is running)
             if self.camera_mode != "real":
                 p.stepSimulation()
-                time.sleep(self.physics_dt)
+                elapsed = time.perf_counter() - start_time
+                time.sleep(max(0, self.physics_dt - elapsed))
             else:
                 # In real mode, just sleep at control frequency
-                time.sleep(self.control_dt)
+                 # Calculate elapsed time and sleep the remainder
+                elapsed = time.perf_counter() - start_time
+                sleep_time = self.control_dt - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                
             physics_step_count += 1
-    
 
 
 def main():
