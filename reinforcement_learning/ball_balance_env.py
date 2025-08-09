@@ -50,7 +50,7 @@ class BallBalanceEnv(gym.Env):
         self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
         
         # Physics parameters
-        self.ball_radius = 0.02
+        self.ball_radius = 0.0075 # 7.5mm radius 
         self.table_size = 0.125  # 25cm table (radius from center to edge)
         
         # State tracking
@@ -82,7 +82,7 @@ class BallBalanceEnv(gym.Env):
         self.prev_table_roll = 0.0
         self.prev_actions = []  # Reset action history
         self.prev_action = None  # Reset previous action for jerk penalty
-    
+
         
         # Disconnect existing physics client if it exists
         if self.physics_client is not None:
@@ -131,14 +131,15 @@ class BallBalanceEnv(gym.Env):
             basePosition=[0, 0, 0.02],
         )
         
-        # Table - sleek dark surface with slight reflection
-        table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[self.table_size, self.table_size, 0.004])
-        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[self.table_size, self.table_size, 0.004], 
-                                         rgbaColor=[0.1, 0.1, 0.1, 1],  # Dark surface
-                                         specularColor=[0.2, 0.2, 0.2])  # Slight metallic look
+        # Table - 25cm x 25cm (halfExtents = total_size / 2) - sleek dark surface
+        table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004])
+        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004], 
+                                         rgbaColor=[0.1, 0.1, 0.1, 1],     # Dark surface
+                                         specularColor=[0.2, 0.2, 0.2])    # Slight metallic look
         self.table_start_pos = [0, 0, 0.06]
         self.table_id = p.createMultiBody(1.0, table_shape, table_visual, self.table_start_pos)
         
+    
         # Ball - randomize initial position slightly
         if options and 'ball_start_pos' in options:
             ball_start_pos = options['ball_start_pos']
@@ -149,15 +150,50 @@ class BallBalanceEnv(gym.Env):
                 np.random.uniform(-0.12, 0.12),
                 0.5
             ]
+
+    
+        axis_length = 0.1
+        p.addUserDebugLine([0, 0, 0.065], [axis_length, 0, 0.065], [1, 0, 0], lineWidth=3)  # X-axis red
+        p.addUserDebugLine([0, 0, 0.065], [0, axis_length, 0.065], [0, 1, 0], lineWidth=3)  # Y-axis green  
+        p.addUserDebugLine([0, 0, 0.065], [0, 0, 0.065 + axis_length], [0, 0, 1], lineWidth=3)  # Z-axis blue
+        p.addUserDebugText("X", [axis_length, 0, 0.065], textColorRGB=[1, 0, 0], textSize=2)
+        p.addUserDebugText("Y", [0, axis_length, 0.065], textColorRGB=[0, 1, 0], textSize=2)
+        p.addUserDebugText("Z", [0, 0, 0.065 + axis_length], textColorRGB=[0, 0, 1], textSize=2)
         
         self.ball_id = p.createMultiBody(
-            baseMass=0.0027,  # 2.7 grams in kg (realistic ping pong ball)
+            baseMass=0.002,  # 
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
-            baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius, 
-                                                   rgbaColor=[0.9, 0.9, 0.9, 1],      # Bright white
-                                                   specularColor=[0.8, 0.8, 0.8]),    # Shiny surface
+            baseVisualShapeIndex=p.createVisualShape(
+                p.GEOM_SPHERE,
+                radius=self.ball_radius,
+                rgbaColor=[0.9, 0.9, 0.9, 1],
+                specularColor=[0.8, 0.8, 0.8]
+            ),
             basePosition=ball_start_pos
         )
+
+        # 🎯 CRITICAL: Apply realistic physics parameters for PLEXIGLASS table
+        # Plexiglass is much more slippery than wood/metal surfaces
+        p.changeDynamics(
+            self.ball_id, -1,
+            lateralFriction=0.22,         # Slightly higher for more ground resistance
+            rollingFriction=0.05,        # Increase this to resist rolling motion
+            spinningFriction=0.05,      # Increase to resist spin
+            linearDamping=0.1,           # Simulates air resistance / velocity damping
+            angularDamping=0.08,         # Slows down spinning over time
+            restitution=0.3,             # Lower if you want less bounce
+            contactStiffness=2500,       # Already OK for plexiglass
+            contactDamping=80            # Increase to dissipate energy on contact
+        )
+        
+        # Plexiglass table surface properties
+        p.changeDynamics(
+            self.table_id, -1,
+            lateralFriction=0.22,       # Match the ball
+            rollingFriction=0.05,
+            restitution=0.3            # Match ball bounce
+        )
+
         
         # Let the ball settle
         for _ in range(100):
@@ -342,8 +378,8 @@ class BallBalanceEnv(gym.Env):
         # Simple PD controller logic: proportional to position + derivative (velocity)
         
         # Proportional gains (how much to tilt based on position error)
-        kp = 1.3  # Position gain
-        kd = 0.2  # Velocity (derivative) gain
+        kp = 1.35  # Position gain
+        kd = 0.18  # Velocity (derivative) gain
         
         # Calculate desired table tilts to center the ball
         # Tilt table opposite to ball position to "roll" ball toward center
