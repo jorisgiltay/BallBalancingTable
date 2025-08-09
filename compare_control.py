@@ -1395,16 +1395,17 @@ class BallBalanceComparison:
             if self.camera_mode != "real":
                 p.stepSimulation()
                 elapsed = time.perf_counter() - start_time
-                time.sleep(max(0, self.physics_dt - elapsed))
+                time.sleep(max(0, self.control_dt - elapsed))
             else:
                 # In real mode, just sleep at control frequency
                  # Calculate elapsed time and sleep the remainder
-                elapsed = time.perf_counter() - start_time
-                sleep_time = self.control_dt - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                
-                
+                # elapsed = time.perf_counter() - start_time
+                # sleep_time = self.control_dt - elapsed
+                # if sleep_time > 0:
+                #     time.sleep(sleep_time)
+                time.sleep(self.control_dt)
+
+
             physics_step_count += 1
 
 
