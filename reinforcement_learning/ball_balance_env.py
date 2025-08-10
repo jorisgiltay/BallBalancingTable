@@ -17,11 +17,11 @@ class BallBalanceEnv(gym.Env):
                  add_obs_noise=False, obs_noise_std_pos=0.001, obs_noise_std_vel=0.02,
                  friction_low=0.22, friction_high=0.30,
                  ball_mass_low=0.0018, ball_mass_high=0.0022,
-                 use_pid_guidance=False, pid_kp=1.35, pid_kd=0.18, pid_guidance_weight=0.2,
-                 weight_distance=2.0, weight_velocity=0.5, weight_control=0.02, weight_angle=0.15,
+                 use_pid_guidance=False, pid_kp=1.35, pid_kd=0.18, pid_guidance_weight=0.3,
+                 weight_distance=2.0, weight_velocity=0.9, weight_control=0.05, weight_angle=0.30,
                  center_bonus_close=3.0, center_bonus_near=0.5, stability_bonus_val=1.5,
-                 reward_clip_max=8.0, progress_weight=0.3,
-                 use_servo_dynamics=True, servo_speed_per_step=0.02):
+                 reward_clip_max=8.0, progress_weight=0.10, weight_jerk=0.08,
+                 use_servo_dynamics=True, servo_speed_per_step=0.01):
         super().__init__()
         
         self.render_mode = render_mode
@@ -30,7 +30,7 @@ class BallBalanceEnv(gym.Env):
 
         # Table limits
         self.limit_angle = np.radians(9)        # Max tilt ±9°
-        self.max_delta_angle = self.limit_angle / 2  # Max change per step
+        self.max_delta_angle = self.limit_angle / 3  # Max change per step (more conservative by default)
 
         # SAC-friendly action space: normalized [-1, 1]
         self.action_space = spaces.Box(
@@ -105,6 +105,8 @@ class BallBalanceEnv(gym.Env):
         self.stability_bonus_val = float(stability_bonus_val)
         self.reward_clip_max = float(reward_clip_max)
         self.progress_weight = float(progress_weight)
+        self.weight_jerk = float(weight_jerk)
+        self.prev_action = None
 
         # Servo dynamics (mimic hardware rate limit per control step at ~60-63 Hz)
         self.use_servo_dynamics = bool(use_servo_dynamics)
@@ -124,6 +126,7 @@ class BallBalanceEnv(gym.Env):
         self.near_center_streak = 0
         self.episode_rewards = []
         self.prev_dist = None
+        self.prev_action = None
 
         # Disconnect previous physics
         if self.physics_client is not None:
@@ -189,7 +192,7 @@ class BallBalanceEnv(gym.Env):
         ball_friction = np.random.uniform(self.friction_low, self.friction_high)
         table_friction = np.random.uniform(self.friction_low, self.friction_high)
         p.changeDynamics(self.ball_id, -1, lateralFriction=ball_friction, rollingFriction=0.05,
-                         spinningFriction=0.05, linearDamping=0.1, angularDamping=0.08,
+                         spinningFriction=0.05, linearDamping=0.13, angularDamping=0.11,
                          restitution=0.3, mass=ball_mass, contactStiffness=2500,
                          contactDamping=80)
         p.changeDynamics(self.table_id, -1, lateralFriction=table_friction, rollingFriction=0.05,
@@ -301,6 +304,13 @@ class BallBalanceEnv(gym.Env):
         # Control effort penalty (encourage smooth control)
         action_magnitude = np.linalg.norm(action)
         control_penalty = -self.weight_control * action_magnitude
+
+        # Jerk penalty (discourage rapid changes in action from step to step)
+        jerk_penalty = 0.0
+        if self.prev_action is not None:
+            jerk = np.linalg.norm(action - self.prev_action)
+            jerk_penalty = -self.weight_jerk * jerk
+        self.prev_action = np.array(action)
         
         # Angle penalty (penalize extreme tilts)
         angle_magnitude = np.sqrt(table_pitch**2 + table_roll**2)
@@ -350,6 +360,7 @@ class BallBalanceEnv(gym.Env):
             center_bonus +
             stability_bonus +
             progress_bonus +
+            jerk_penalty +
             guidance_bonus
         )
         
