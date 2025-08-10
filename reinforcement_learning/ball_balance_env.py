@@ -4,154 +4,172 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 import time
-from typing import Tuple, Dict, Any
-
 
 class BallBalanceEnv(gym.Env):
     """
-    Reinforcement Learning Environment for Ball Balancing Table
-    
-    Observation Space:
-    - Ball position (x, y) - from camera/sensor
-    - Ball velocity (vx, vy) - estimated from position differences (realistic)
-    - Table angles (pitch, roll)
-    
-    Action Space:
-    - Table pitch angle change
-    - Table roll angle change
+    SAC-friendly Ball Balancing Environment with improved reward structure
+    - Actions: Normalized in [-1, 1] (scaled to delta angles internally)
+    - Rewards: Designed to encourage both survival and good balancing
+    - Physics: Randomized friction & mass for robustness
     """
     
-    def __init__(self, render_mode="human", max_steps=2000, control_freq=50):
+    def __init__(self, render_mode="human", max_steps=2000, control_freq=60,
+                 add_obs_noise=False, obs_noise_std_pos=0.001, obs_noise_std_vel=0.02,
+                 friction_low=0.18, friction_high=0.26,
+                 ball_mass_low=0.0018, ball_mass_high=0.0022,
+                 use_pid_guidance=False, pid_kp=1.35, pid_kd=0.18, pid_guidance_weight=0.2):
         super().__init__()
         
         self.render_mode = render_mode
         self.max_steps = max_steps
         self.current_step = 0
 
-        
-        # Action space: pitch and roll angle changes (in radians) - smaller for smoother control
+        # Table limits
+        self.limit_angle = np.radians(9)        # Max tilt ±9°
+        self.max_delta_angle = self.limit_angle / 2  # Max change per step
+
+        # SAC-friendly action space: normalized [-1, 1]
         self.action_space = spaces.Box(
-            low=-0.05, high=0.05, shape=(2,), dtype=np.float32  
+            low=-1.0, high=1.0, shape=(2,), dtype=np.float32
         )
         
-        # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll] - ESTIMATED VELOCITY
-        # Updated bounds for 25cm table
+        # Observation space: [ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll]
+        self.table_radius = 0.125
         self.observation_space = spaces.Box(
-            low=np.array([-0.15, -0.15, -2.0, -2.0, -0.1, -0.1]),
-            high=np.array([0.15, 0.15, 2.0, 2.0, 0.1, 0.1]),
+            low=np.array([-0.15, -0.15, -2.0, -2.0, -0.2, -0.2]),
+            high=np.array([0.15, 0.15, 2.0, 2.0, 0.2, 0.2]),
             dtype=np.float32
         )
         
-        # Timing parameters
-        self.physics_freq = 240  # Hz - physics simulation frequency
-        self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
-        self.physics_dt = 1.0 / self.physics_freq  # Physics timestep
-        self.control_dt = 1.0 / self.control_freq  # Control timestep
-        self.physics_steps_per_control = self.physics_freq // self.control_freq  # Steps per control update
+        # Timing
+        self.physics_freq = 240
+        self.control_freq = control_freq
+        self.physics_dt = 1.0 / self.physics_freq
+        self.control_dt = 1.0 / self.control_freq
+        self.physics_steps_per_control = self.physics_freq // self.control_freq
         
-        # Physics parameters
-        self.ball_radius = 0.0075 # 7.5mm radius 
-        self.table_size = 0.125  # 25cm table (radius from center to edge)
+        # Ball & table properties
+        self.ball_radius = 0.0075
+        self.table_size = 0.125
+        self.spawn_range = 0.10  # default spawn range (radius on table)
         
-        # State tracking
+        # State
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None  # For velocity estimation
-        self.prev_observation_time = None  # For proper velocity estimation timing
-        self.prev_table_pitch = 0.0
-        self.prev_table_roll = 0.0
-        self.prev_actions = []  # Track action history for oscillation detection
-        self.prev_action = None  # Track previous action for jerk penalty
+        self.prev_ball_pos = None
+        self.prev_actions = []
+        self.small_action_streak = 0
+        self.near_center_streak = 0
         
-        # Initialize PyBullet
+        # Reward tracking for normalization
+        self.episode_rewards = []
+        
+        # PyBullet
         self.physics_client = None
         self.table_id = None
         self.ball_id = None
         self.plane_id = None
         self.base_id = None
-        
+
+        # Observation noise (for sim-to-real robustness)
+        self.add_obs_noise = add_obs_noise
+        self.obs_noise_std_pos = float(obs_noise_std_pos)
+        self.obs_noise_std_vel = float(obs_noise_std_vel)
+
+        # Domain randomization ranges
+        self.friction_low = float(friction_low)
+        self.friction_high = float(friction_high)
+        self.ball_mass_low = float(ball_mass_low)
+        self.ball_mass_high = float(ball_mass_high)
+
+        # PID guidance (for reward shaping / imitation of baseline controller)
+        self.use_pid_guidance = bool(use_pid_guidance)
+        self.pid_kp = float(pid_kp)
+        self.pid_kd = float(pid_kd)
+        self.pid_guidance_weight = float(pid_guidance_weight)
+    
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
         self.current_step = 0
         self.table_pitch = 0.0
         self.table_roll = 0.0
-        self.prev_ball_pos = None  # Reset for velocity estimation
-        self.prev_observation_time = None  # Reset timing for velocity estimation
-        self.prev_table_pitch = 0.0
-        self.prev_table_roll = 0.0
-        self.prev_actions = []  # Reset action history
-        self.prev_action = None  # Reset previous action for jerk penalty
+        self.prev_ball_pos = None
+        self.prev_actions = []
+        self.small_action_streak = 0
+        self.near_center_streak = 0
+        self.episode_rewards = []
 
-        
-        # Disconnect existing physics client if it exists
+        # Disconnect previous physics
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
         
-        # Initialize PyBullet
+        # Connect to PyBullet
         if self.render_mode == "human":
             self.physics_client = p.connect(p.GUI)
-            
-            # Clean, professional camera setup
             p.resetDebugVisualizerCamera(
-                cameraDistance=0.6,        # Closer view for better detail
-                cameraYaw=30,              # Slight angle for better perspective
-                cameraPitch=-45,           # Looking down at optimal angle
-                cameraTargetPosition=[0, 0, 0.06]  # Focus on table center
+                cameraDistance=0.6,
+                cameraYaw=30,
+                cameraPitch=-45,
+                cameraTargetPosition=[0, 0, 0.06]
             )
-            
-            # Remove GUI clutter for clean appearance
-            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)                    # Hide control panel
-            p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 0)          # Better rendering quality
-            p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING, 0)          # Disable mouse interaction
-            p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS, 0)     # Disable keyboard shortcuts
-            p.configureDebugVisualizer(p.COV_ENABLE_SEGMENTATION_MARK_PREVIEW, 0)  # Clean view
-            p.configureDebugVisualizer(p.COV_ENABLE_DEPTH_BUFFER_PREVIEW, 0)   # Clean view
-            p.configureDebugVisualizer(p.COV_ENABLE_RGB_BUFFER_PREVIEW, 0)     # Clean view
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
         else:
             self.physics_client = p.connect(p.DIRECT)
-            
+        
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
         
-        # Create custom gray ground plane instead of default blue/white checkerboard
+        # Ground plane
         ground_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01])
-        ground_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01], 
-                                          rgbaColor=[0.4, 0.4, 0.4, 1])  # Clean gray
-        self.plane_id = p.createMultiBody(baseMass=0, 
-                                        baseCollisionShapeIndex=ground_shape,
-                                        baseVisualShapeIndex=ground_visual,
-                                        basePosition=[0, 0, -0.01])
+        ground_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[2, 2, 0.01],
+                                            rgbaColor=[0.4, 0.4, 0.4, 1])
+        self.plane_id = p.createMultiBody(0, ground_shape, ground_visual, [0, 0, -0.01])
         
-        # Base support - darker gray for better contrast
+        # Base
         self.base_id = p.createMultiBody(
             baseMass=0,
             baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03]),
-            baseVisualShapeIndex=p.createVisualShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03], rgbaColor=[0.3, 0.3, 0.3, 1]),
+            baseVisualShapeIndex=p.createVisualShape(p.GEOM_BOX, halfExtents=[0.05, 0.05, 0.03],
+                                                     rgbaColor=[0.3, 0.3, 0.3, 1]),
             basePosition=[0, 0, 0.02],
         )
         
-        # Table - 25cm x 25cm (halfExtents = total_size / 2) - sleek dark surface
+        # Table
         table_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004])
-        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004], 
-                                         rgbaColor=[0.1, 0.1, 0.1, 1],     # Dark surface
-                                         specularColor=[0.2, 0.2, 0.2])    # Slight metallic look
+        table_visual = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.125, 0.125, 0.004],
+                                           rgbaColor=[0.1, 0.1, 0.1, 1])
         self.table_start_pos = [0, 0, 0.06]
         self.table_id = p.createMultiBody(1.0, table_shape, table_visual, self.table_start_pos)
         
-    
-        # Ball - randomize initial position slightly
-        if options and 'ball_start_pos' in options:
-            ball_start_pos = options['ball_start_pos']
-        else:
-            # Random start position within reasonable bounds - 25cm table
-            ball_start_pos = [
-                np.random.uniform(-0.12, 0.12),  # Stay within 24cm range for safety
-                np.random.uniform(-0.12, 0.12),
-                0.5
-            ]
+        # Ball spawn
+        spawn_range = self.spawn_range  # Use configurable spawn range
+        ball_start_pos = [
+            np.random.uniform(-spawn_range, spawn_range),
+            np.random.uniform(-spawn_range, spawn_range),
+            0.5
+        ]
+        
+        # Ball
+        self.ball_id = p.createMultiBody(
+            baseMass=0.002,
+            baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
+            baseVisualShapeIndex=p.createVisualShape(p.GEOM_SPHERE, radius=self.ball_radius,
+                                                     rgbaColor=[0.9, 0.9, 0.9, 1]),
+            basePosition=ball_start_pos
+        )
 
-    
+        # Randomize physics params
+        ball_mass = np.random.uniform(self.ball_mass_low, self.ball_mass_high)
+        ball_friction = np.random.uniform(self.friction_low, self.friction_high)
+        table_friction = np.random.uniform(self.friction_low, self.friction_high)
+        p.changeDynamics(self.ball_id, -1, lateralFriction=ball_friction, rollingFriction=0.05,
+                         spinningFriction=0.05, linearDamping=0.1, angularDamping=0.08,
+                         restitution=0.3, mass=ball_mass, contactStiffness=2500,
+                         contactDamping=80)
+        p.changeDynamics(self.table_id, -1, lateralFriction=table_friction, rollingFriction=0.05,
+                         restitution=0.3)
+        
         axis_length = 0.1
         p.addUserDebugLine([0, 0, 0.065], [axis_length, 0, 0.065], [1, 0, 0], lineWidth=3)  # X-axis red
         p.addUserDebugLine([0, 0, 0.065], [0, axis_length, 0.065], [0, 1, 0], lineWidth=3)  # Y-axis green  
@@ -159,266 +177,193 @@ class BallBalanceEnv(gym.Env):
         p.addUserDebugText("X", [axis_length, 0, 0.065], textColorRGB=[1, 0, 0], textSize=2)
         p.addUserDebugText("Y", [0, axis_length, 0.065], textColorRGB=[0, 1, 0], textSize=2)
         p.addUserDebugText("Z", [0, 0, 0.065 + axis_length], textColorRGB=[0, 0, 1], textSize=2)
-        
-        self.ball_id = p.createMultiBody(
-            baseMass=0.002,  # 
-            baseCollisionShapeIndex=p.createCollisionShape(p.GEOM_SPHERE, radius=self.ball_radius),
-            baseVisualShapeIndex=p.createVisualShape(
-                p.GEOM_SPHERE,
-                radius=self.ball_radius,
-                rgbaColor=[0.9, 0.9, 0.9, 1],
-                specularColor=[0.8, 0.8, 0.8]
-            ),
-            basePosition=ball_start_pos
-        )
 
-        # 🎯 CRITICAL: Apply realistic physics parameters for PLEXIGLASS table
-        # Plexiglass is much more slippery than wood/metal surfaces
-        p.changeDynamics(
-            self.ball_id, -1,
-            lateralFriction=0.22,         # Slightly higher for more ground resistance
-            rollingFriction=0.05,        # Increase this to resist rolling motion
-            spinningFriction=0.05,      # Increase to resist spin
-            linearDamping=0.1,           # Simulates air resistance / velocity damping
-            angularDamping=0.08,         # Slows down spinning over time
-            restitution=0.3,             # Lower if you want less bounce
-            contactStiffness=2500,       # Already OK for plexiglass
-            contactDamping=80            # Increase to dissipate energy on contact
-        )
-        
-        # Plexiglass table surface properties
-        p.changeDynamics(
-            self.table_id, -1,
-            lateralFriction=0.22,       # Match the ball
-            rollingFriction=0.05,
-            restitution=0.3            # Match ball bounce
-        )
-
-        
-        # Let the ball settle
-        for _ in range(100):
+        # Let ball settle
+        for _ in range(60):
             p.stepSimulation()
         
-        observation = self._get_observation()
-        info = self._get_info()
-        
-        return observation, info
-    
+        return self._get_observation(), self._get_info()
+
     def step(self, action):
         self.current_step += 1
-        
-        # Store previous angles for smooth movement penalty
-        self.prev_table_pitch = self.table_pitch
-        self.prev_table_roll = self.table_roll
-        
-        # Track action history for oscillation detection (keep last 6 actions)
-        self.prev_actions.append(action.copy())
-        if len(self.prev_actions) > 6:
-            self.prev_actions.pop(0)
-        
-        # Apply action (change in table angles)
-        self.table_pitch += action[0]
-        self.table_roll += action[1]
-        
-        # Clip angles to reasonable limits
-        self.table_pitch = np.clip(self.table_pitch, -0.1920, 0.1920)
-        self.table_roll = np.clip(self.table_roll, -0.1920, 0.1920)
 
-        # Update table orientation with ACTUAL servo positions 
+        # Scale normalized [-1,1] action to delta radians
+        delta_pitch = action[0] * self.max_delta_angle
+        delta_roll = action[1] * self.max_delta_angle
+
+        self.table_pitch = np.clip(self.table_pitch + delta_pitch, -self.limit_angle, self.limit_angle)
+        self.table_roll = np.clip(self.table_roll + delta_roll, -self.limit_angle, self.limit_angle)
+
         quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
         p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
-        
-        # Step simulation multiple times to maintain proper physics frequency
+
         for _ in range(self.physics_steps_per_control):
             p.stepSimulation()
             if self.render_mode == "human":
                 time.sleep(self.physics_dt)
-        
-        # Get new observation
-        observation = self._get_observation()
-        
-        # Calculate reward
-        reward = self._calculate_reward(observation, action)
-        
-        # Check termination conditions
-        terminated = self._is_terminated(observation)
+
+        obs = self._get_observation()
+        reward = self._calculate_reward_improved(obs, action)
+        terminated = self._is_terminated(obs)
         truncated = self.current_step >= self.max_steps
-        
         info = self._get_info()
         
-        return observation, reward, terminated, truncated, info
-    
-    def _get_observation(self):
-        # Ball position from sensor/camera
-        ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-        ball_x, ball_y, ball_z = ball_pos
+        self.episode_rewards.append(reward)
         
-        # Estimate velocity from position differences using actual control timestep
+        return obs, reward, terminated, truncated, info
+
+    def _get_observation(self):
+        ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+        ball_x, ball_y, _ = ball_pos
         ball_vx, ball_vy = 0.0, 0.0
         if self.prev_ball_pos is not None:
-            # Use control timestep for proper velocity estimation
             ball_vx = (ball_x - self.prev_ball_pos[0]) / self.control_dt
             ball_vy = (ball_y - self.prev_ball_pos[1]) / self.control_dt
-        
-        # Update previous position for next velocity calculation
         self.prev_ball_pos = [ball_x, ball_y]
+
+        # Optional observation noise (positions/velocities only)
+        if self.add_obs_noise:
+            noise_px = np.random.normal(0.0, self.obs_noise_std_pos)
+            noise_py = np.random.normal(0.0, self.obs_noise_std_pos)
+            noise_vx = np.random.normal(0.0, self.obs_noise_std_vel)
+            noise_vy = np.random.normal(0.0, self.obs_noise_std_vel)
+            ball_x_noisy = ball_x + noise_px
+            ball_y_noisy = ball_y + noise_py
+            ball_vx_noisy = ball_vx + noise_vx
+            ball_vy_noisy = ball_vy + noise_vy
+        else:
+            ball_x_noisy, ball_y_noisy = ball_x, ball_y
+            ball_vx_noisy, ball_vy_noisy = ball_vx, ball_vy
+
+        return np.array([ball_x_noisy, ball_y_noisy, ball_vx_noisy, ball_vy_noisy, self.table_pitch, self.table_roll], dtype=np.float32)
+
+    def _calculate_reward_improved(self, obs, action):
+        """
+        Improved reward function that encourages both survival and good balancing
+        """
+        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = obs
+        dist = np.sqrt(ball_x**2 + ball_y**2)
         
-        # Return position + estimated velocity + table angles
-        observation = np.array([
-            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
-        ], dtype=np.float32)
+        # Terminal penalty for falling off
+        if dist > self.table_radius:
+            return -100.0  # Large negative, but not overwhelming for episode return
         
-        return observation
-    
-    def _calculate_reward(self, observation, action):
-        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation
-        distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-
-        if distance_from_center > self.table_size:
-            return -10.0  # Fail case
-
-        # === 1. Position reward (normalized: max ~ +4.0) ===
-        position_reward = max(0.0, 4.0 * (1.0 - (distance_from_center / self.table_size)))
-
-        # === 2. Time bonus (small constant) ===
-        time_bonus = 0.1  # Increased from 0.05 to enhance survival incentive
-
-        # === 3. Action penalty (softer, quadratic) ===
+        # Base survival reward (positive for staying on table)
+        survival_reward = 1.0
+        
+        # Distance penalty (scaled to be less dominant)
+        # Use exponential decay for smoother gradient
+        distance_penalty = -2.0 * (dist / self.table_radius)**2
+        
+        # Velocity penalty (encourage stability)
+        velocity = np.sqrt(ball_vx**2 + ball_vy**2)
+        velocity_penalty = -0.5 * min(velocity, 2.0)  # Cap to prevent explosion
+        
+        # Control effort penalty (encourage smooth control)
         action_magnitude = np.linalg.norm(action)
-        action_penalty = -10.0 * action_magnitude**2  # Down from -20
+        control_penalty = -0.05 * action_magnitude
+        
+        # Angle penalty (penalize extreme tilts)
+        angle_magnitude = np.sqrt(table_pitch**2 + table_roll**2)
+        angle_penalty = -0.3 * (angle_magnitude / self.limit_angle)
+        
+        # Bonuses for excellent performance
+        center_bonus = 0.0
+        if dist < 0.01:  # Very close to center
+            center_bonus = 3.0
+        elif dist < 0.03:  # Near center
+            center_bonus = 0.5
+        
+        # Stability bonus (low velocity near center)
+        stability_bonus = 0.0
+        if dist < 0.05 and velocity < 0.1:
+            stability_bonus = 1.5
+        
+        # PID guidance (encourage table angles to be close to a PD baseline)
+        guidance_bonus = 0.0
+        if self.use_pid_guidance:
+            # PD baseline angles (absolute), clipped to physical limits
+            # Sign convention matches compare_control PID: pitch ~ -PID(x), roll ~ +PID(y)
+            pid_pitch_target = - (self.pid_kp * ball_x + self.pid_kd * ball_vx)
+            pid_roll_target  =   (self.pid_kp * ball_y + self.pid_kd * ball_vy)
+            pid_pitch_target = float(np.clip(pid_pitch_target, -self.limit_angle, self.limit_angle))
+            pid_roll_target  = float(np.clip(pid_roll_target,  -self.limit_angle, self.limit_angle))
 
-        # Soft limit penalty
-        if np.any(np.abs(action) > 0.045):
-            action_penalty += -1.0  # Reduced from -2
+            angle_error = np.sqrt((table_pitch - pid_pitch_target)**2 + (table_roll - pid_roll_target)**2)
+            # Negative penalty on error (scaled); use exp to soften far-away gradients
+            guidance_bonus = - self.pid_guidance_weight * angle_error
 
-        # === 4. Bang-bang streak penalty (smoothed) ===
-        if not hasattr(self, 'max_action_streak'):
-            self.max_action_streak = 0
-        if np.any(np.abs(action) > 0.048):
-            self.max_action_streak += 1
-        else:
-            self.max_action_streak = 0
-
-        if self.max_action_streak >= 3:
-            action_penalty += -2.0 - 1.0 * (self.max_action_streak - 3)  # Smoothed penalty instead of cliff
-
-        # === 5. Oscillation / circular motion penalty ===
-        oscillation_penalty = 0.0
-        if len(self.prev_actions) >= 6:
-            recent_actions = self.prev_actions[-6:] + [action]
-            pitch_signs = [np.sign(a[0]) for a in recent_actions if abs(a[0]) > 0.03]
-            roll_signs = [np.sign(a[1]) for a in recent_actions if abs(a[1]) > 0.03]
-
-            def is_alternating(signs):
-                if len(signs) < 4:
-                    return False
-                return sum(signs[i] != signs[i-1] for i in range(1, len(signs))) >= 3
-
-            if is_alternating(pitch_signs) or is_alternating(roll_signs):
-                oscillation_penalty += -1.0  # Reduced from -2
-
-            mags = [np.linalg.norm(a) for a in recent_actions]
-            if np.mean(mags) > 0.03:
-                angles = [np.arctan2(a[1], a[0]) for a in recent_actions if np.linalg.norm(a) > 0.01]
-                if len(angles) >= 5:
-                    diffs = [abs(angles[i] - angles[i-1]) for i in range(1, len(angles))]
-                    avg_diff = np.mean(diffs)
-                    if 0.3 < avg_diff < 2.0:
-                        oscillation_penalty += -1.5  # Reduced from -3
-
-        # === 6. Smoothness bonus (kept as-is) ===
-        if not hasattr(self, 'small_action_streak'):
-            self.small_action_streak = 0
-        if action_magnitude < 0.012:
-            self.small_action_streak += 1
-        else:
-            self.small_action_streak = 0
-
-        smoothness_bonus = 0.0
-        if self.small_action_streak >= 8:
-            smoothness_bonus = 2.0  # Slightly reduced from 3.0
-
-        # === 7. Prolonged table angle penalty (softened) ===
-        table_angle = np.sqrt(table_pitch**2 + table_roll**2)
-        if not hasattr(self, 'table_angle_history'):
-            self.table_angle_history = []
-        self.table_angle_history.append(table_angle)
-        if len(self.table_angle_history) > 8:
-            self.table_angle_history.pop(0)
-
-        avg_table_angle = np.mean(self.table_angle_history)
-        prolonged_angle_penalty = -2.0 * avg_table_angle  # Reduced from -3.0
-
-        # === 8. Optimality penalty ===
-        optimal_action = self._calculate_optimal_action(ball_x, ball_y, ball_vx, ball_vy)
-        optimality_penalty = -5.0 * np.linalg.norm(action - optimal_action)  # Weight controls impact
-
-        # === Final Reward ===
+        # Combine all components
         total_reward = (
-            position_reward +
-            time_bonus +
-            action_penalty +
-            oscillation_penalty +
-            smoothness_bonus +
-            prolonged_angle_penalty +
-            optimality_penalty  
+            survival_reward +
+            distance_penalty +
+            velocity_penalty +
+            control_penalty +
+            angle_penalty +
+            center_bonus +
+            stability_bonus +
+            guidance_bonus
         )
-
-        # === Normalize to [-10, 10] ===
-        total_reward = np.clip(total_reward, -10.0, 10.0)
-
-        # Update prev action
-        self.prev_action = action.copy()
-
-        return total_reward
-
+        
+        return float(np.clip(total_reward, -100, 8))
     
-    def _calculate_optimal_action(self, ball_x, ball_y, ball_vx, ball_vy):
-        """Calculate the theoretically optimal action for current ball state"""
-        # Simple PD controller logic: proportional to position + derivative (velocity)
+    def _calculate_reward_sparse(self, obs, action):
+        """
+        Alternative: Sparse reward function (simpler for some algorithms)
+        """
+        ball_x, ball_y, _, _, _, _ = obs
+        dist = np.sqrt(ball_x**2 + ball_y**2)
         
-        # Proportional gains (how much to tilt based on position error)
-        kp = 1.35  # Position gain
-        kd = 0.18  # Velocity (derivative) gain
+        # Terminal penalty
+        if dist > self.table_radius:
+            return -1.0
         
-        # Calculate desired table tilts to center the ball
-        # Tilt table opposite to ball position to "roll" ball toward center
-        desired_pitch = -ball_x * kp - ball_vx * kd  # Negative because we want to oppose ball movement
-        desired_roll = -ball_y * kp - ball_vy * kd
-        
-        # Clip to action space limits
-        desired_pitch = np.clip(desired_pitch, -0.1920, 0.1920)
-        desired_roll = np.clip(desired_roll, -0.1920, 0.1920)
-        
-        return np.array([desired_pitch, desired_roll], dtype=np.float32)
-    
-    def _is_terminated(self, observation):
-        ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = observation  # Updated for 6D format
-        
-        # Check if ball fell off the table
-        distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-        if distance_from_center > self.table_size:
+        # Simple distance-based reward
+        if dist < 0.02:
+            return 1.0
+        elif dist < 0.05:
+            return 0.1
+        else:
+            return 0.0
+
+    def _is_terminated(self, obs):
+        ball_x, ball_y, _, _, _, _ = obs
+        dist = np.sqrt(ball_x**2 + ball_y**2)
+        if dist > self.table_radius:
             return True
-        
-        # Check if ball fell below table
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-        if ball_pos[2] < 0.05:  # Below table level
-            return True
-            
-        return False
-    
+        return ball_pos[2] < 0.05
+
     def _get_info(self):
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
-        distance_from_center = np.sqrt(ball_pos[0]**2 + ball_pos[1]**2)
+        dist = np.sqrt(ball_pos[0]**2 + ball_pos[1]**2)
+        
+        # Add episode return to info for monitoring
+        episode_return = sum(self.episode_rewards) if self.episode_rewards else 0
         
         return {
-            "distance_from_center": distance_from_center,
+            "distance_from_center": dist,
             "ball_position": ball_pos,
             "table_angles": [self.table_pitch, self.table_roll],
-            "step": self.current_step
+            "step": self.current_step,
+            "episode_return": episode_return
         }
-    
+
     def close(self):
         if self.physics_client is not None:
             p.disconnect(self.physics_client)
             self.physics_client = None
+
+    # ----- Curriculum support -----
+    def set_curriculum_stage(self, stage: str):
+        """Adjust environment difficulty. Stages: 'easy', 'medium', 'hard'"""
+        stage = stage.lower()
+        if stage == 'easy':
+            self.spawn_range = 0.05
+            self.max_delta_angle = self.limit_angle / 4  # smaller per-step change
+        elif stage == 'medium':
+            self.spawn_range = 0.08
+            self.max_delta_angle = self.limit_angle / 3
+        else:  # 'hard' or default
+            self.spawn_range = 0.10
+            self.max_delta_angle = self.limit_angle / 2

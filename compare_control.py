@@ -41,7 +41,7 @@ class BallBalanceComparison:
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False, disable_camera_rendering=False):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False, disable_camera_rendering=False, rl_swap_axes=False, rl_invert_x=False, rl_invert_y=False):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
         self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
@@ -50,6 +50,11 @@ class BallBalanceComparison:
         self.imu_control = imu_control  # Flag to enable IMU control mode (table follows IMU)
         self.camera_mode = camera_mode  # Camera mode: "simulation", "hybrid", or "real"
         self.disable_camera_rendering = disable_camera_rendering  # Flag to disable camera feed display for performance
+        # RL observation axis adjustment (for sim-to-real alignment)
+        self.rl_swap_axes = rl_swap_axes
+        self.rl_invert_x = rl_invert_x
+        self.rl_invert_y = rl_invert_y
+        
         self.setpoint_x = 0.0
         self.setpoint_y = 0.0
         self._circle_mode = False
@@ -159,6 +164,13 @@ class BallBalanceComparison:
         if self.camera_mode in ["hybrid", "real"] and self.camera_interface:
             self.camera_interface.start_tracking()
             print("📷 Camera tracking started")
+
+        # Announce RL axis adjustments if any
+        if control_method == "rl":
+            if self.rl_swap_axes or self.rl_invert_x or self.rl_invert_y:
+                print("🧭 RL observation axis adjustments:")
+                print(f"   swap_axes={self.rl_swap_axes}, invert_x={self.rl_invert_x}, invert_y={self.rl_invert_y}")
+            
         
         # RL model (will be loaded if using RL)
         self.rl_model = None
@@ -430,6 +442,7 @@ class BallBalanceComparison:
             ),
             basePosition=position
         )
+        
 
         # 🎯 CRITICAL: Apply realistic physics parameters for PLEXIGLASS table
         # Plexiglass is much more slippery than wood/metal surfaces
@@ -852,7 +865,7 @@ class BallBalanceComparison:
         """Get current state observation - now with camera support"""
         if self.camera_mode == "simulation":
             # Use original simulation-based observation
-            return self._get_simulation_observation()
+            return self._get_simulation_observation2()
         
         # Get ball state from camera interface
         ball_x, ball_y, ball_vx, ball_vy = self.camera_interface.get_ball_state(
@@ -864,8 +877,9 @@ class BallBalanceComparison:
         self.prev_ball_pos = [ball_x, ball_y]
         
         # Return observation in same format as original
+        # Map angles to the training env frame: [pitch_env, roll_env] = [-roll_cc, -pitch_cc]
         observation = np.array([
-            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
+            ball_x, ball_y, ball_vx, ball_vy, -self.table_roll, -self.table_pitch
         ], dtype=np.float32)
 
         return observation
@@ -875,7 +889,7 @@ class BallBalanceComparison:
         # Ball position from sensor/camera
         ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
         ball_x, ball_y, ball_z = ball_pos
-        
+
         # Estimate velocity from position differences using control timestep
         ball_vx, ball_vy = 0.0, 0.0
         if self.prev_ball_pos is not None:
@@ -886,12 +900,25 @@ class BallBalanceComparison:
         # Update previous position for next velocity calculation
         self.prev_ball_pos = [ball_x, ball_y]
         
-        # Return position + estimated velocity + table angles (6D like RL environment)
+        # Return position + estimated velocity + angles mapped to training env frame
+        # [pitch_env, roll_env] = [-roll_cc, -pitch_cc]
         observation = np.array([
-            ball_x, ball_y, ball_vx, ball_vy, self.table_pitch, self.table_roll
+            ball_x, ball_y, ball_vx, ball_vy, -self.table_roll, -self.table_pitch
         ], dtype=np.float32)
+
+        #print("LIVE OBS:", observation)
         
         return observation
+    def _get_simulation_observation2(self):
+        ball_pos, _ = p.getBasePositionAndOrientation(self.ball_id)
+        ball_x, ball_y, _ = ball_pos
+        ball_vx, ball_vy = 0.0, 0.0
+        if self.prev_ball_pos is not None:
+            ball_vx = (ball_x - self.prev_ball_pos[0]) / self.control_dt
+            ball_vy = (ball_y - self.prev_ball_pos[1]) / self.control_dt
+        self.prev_ball_pos = [ball_x, ball_y]
+        # Map angles to training env frame for RL
+        return np.array([ball_x, ball_y, ball_vx, ball_vy, -self.table_roll, -self.table_pitch], dtype=np.float32)
     
     def set_setpoint(self, x, y):
         self.setpoint_x = x
@@ -936,9 +963,6 @@ class BallBalanceComparison:
         pitch_angle = -self.pitch_pid.update(ball_x_corrected, self.control_dt)  # ball_x controls pitch
         roll_angle = self.roll_pid.update(ball_y_corrected, self.control_dt)     # ball_y controls roll
 
-
-
-
         return pitch_angle, roll_angle
     
     def rl_control(self, observation):
@@ -946,13 +970,47 @@ class BallBalanceComparison:
         if self.rl_model is None:
             return 0.0, 0.0
         
-        action, _ = self.rl_model.predict(observation, deterministic=True)
+        # Apply optional axis adjustments ONLY for RL observation
+        obs_rl = self._transform_observation_for_rl(observation)
+        action, _ = self.rl_model.predict(obs_rl, deterministic=True)
+        
+
+        # Match training env per-step delta scaling (±9°/2 per control step)
+        action = action * (np.radians(9)/2)
+
         # Only print RL actions occasionally to avoid spam
         # if self.step_count % (self.control_freq * 2) == 0:  # Print every 2 seconds
+        
 
         action = [-action[1], -action[0]]
 
         return action  # pitch_change, roll_change
+
+    def _transform_observation_for_rl(self, observation: np.ndarray) -> np.ndarray:
+        """Apply optional axis swap/inversions to the RL observation without affecting PID.
+
+        Only position and velocity components are transformed: [x, y, vx, vy].
+        Angle components (last two) remain as env-frame angles already prepared by get_observation.
+        """
+        try:
+            obs = observation.copy()
+            x, y, vx, vy = obs[0], obs[1], obs[2], obs[3]
+            # Swap axes if requested
+            if self.rl_swap_axes:
+                x, y = y, x
+                vx, vy = vy, vx
+            # Invert axes if requested
+            if self.rl_invert_x:
+                x = -x
+                vx = -vx
+            if self.rl_invert_y:
+                y = -y
+                vy = -vy
+            obs[0], obs[1], obs[2], obs[3] = x, y, vx, vy
+            return obs
+        except Exception:
+            # On any issue, fall back to original observation
+            return observation
     
     def run_simulation(self):
         """Main simulation loop with configurable control rate"""
@@ -1173,7 +1231,7 @@ class BallBalanceComparison:
                 else:  # RL
                     pitch_change, roll_change = self.rl_control(observation)
                     
-                    # Apply RL action to get new intended table angles
+                    # Pure RL delta
                     new_table_pitch = self.table_pitch + pitch_change
                     new_table_roll = self.table_roll + roll_change
                     
@@ -1204,9 +1262,10 @@ class BallBalanceComparison:
                         # No IMU feedback - use RL action directly
                         self.table_pitch = new_table_pitch
                         self.table_roll = new_table_roll
-                    # Clip to reasonable limits
-                    self.table_pitch = np.clip(self.table_pitch, -0.1, 0.1)
-                    self.table_roll = np.clip(self.table_roll, -0.1, 0.1)
+                    # Clip to angle limits (use RL-specific limit if provided)
+                    limit = self.control_output_limit
+                    self.table_pitch = np.clip(self.table_pitch, -limit, limit)
+                    self.table_roll = np.clip(self.table_roll, -limit, limit)
                     control_action = [pitch_change, roll_change]
                 
                 if self.camera_mode == "real":
@@ -1433,6 +1492,14 @@ def main():
                        help="Quick check of IMU calibration accuracy (no simulation)")
     parser.add_argument("--disable-camera-rendering", action="store_true",
                        help="Disable camera feed display for better performance (keeps ball detection active)")
+    # RL sim-to-real alignment flags (observation axes)
+    parser.add_argument("--rl-swap-axes", action="store_true",
+                       help="Swap x/y axes for RL observation (does not affect PID)")
+    parser.add_argument("--rl-invert-x", action="store_true",
+                       help="Invert x (and vx) for RL observation")
+    parser.add_argument("--rl-invert-y", action="store_true",
+                       help="Invert y (and vy) for RL observation")
+    # removed RL gains/residual to keep compare_control pure; tuning should happen in training
     args = parser.parse_args()
     
     # Quick IMU calibration check mode
@@ -1465,6 +1532,9 @@ def main():
         enable_imu=args.imu,
         imu_port=args.imu_port,
         disable_camera_rendering=args.disable_camera_rendering,
+        rl_swap_axes=args.rl_swap_axes,
+        rl_invert_x=args.rl_invert_x,
+        rl_invert_y=args.rl_invert_y,
     )
     
     try:
