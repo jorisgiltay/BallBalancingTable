@@ -15,9 +15,13 @@ class BallBalanceEnv(gym.Env):
     
     def __init__(self, render_mode="human", max_steps=2000, control_freq=60,
                  add_obs_noise=False, obs_noise_std_pos=0.001, obs_noise_std_vel=0.02,
-                 friction_low=0.18, friction_high=0.26,
+                 friction_low=0.22, friction_high=0.30,
                  ball_mass_low=0.0018, ball_mass_high=0.0022,
-                 use_pid_guidance=False, pid_kp=1.35, pid_kd=0.18, pid_guidance_weight=0.2):
+                 use_pid_guidance=False, pid_kp=1.35, pid_kd=0.18, pid_guidance_weight=0.2,
+                 weight_distance=2.0, weight_velocity=0.5, weight_control=0.02, weight_angle=0.15,
+                 center_bonus_close=3.0, center_bonus_near=0.5, stability_bonus_val=1.5,
+                 reward_clip_max=8.0, progress_weight=0.3,
+                 use_servo_dynamics=True, servo_speed_per_step=0.02):
         super().__init__()
         
         self.render_mode = render_mode
@@ -56,10 +60,13 @@ class BallBalanceEnv(gym.Env):
         # State
         self.table_pitch = 0.0
         self.table_roll = 0.0
+        self.table_pitch_target = 0.0
+        self.table_roll_target = 0.0
         self.prev_ball_pos = None
         self.prev_actions = []
         self.small_action_streak = 0
         self.near_center_streak = 0
+        self.prev_dist = None
         
         # Reward tracking for normalization
         self.episode_rewards = []
@@ -87,6 +94,21 @@ class BallBalanceEnv(gym.Env):
         self.pid_kp = float(pid_kp)
         self.pid_kd = float(pid_kd)
         self.pid_guidance_weight = float(pid_guidance_weight)
+
+        # Reward weights
+        self.weight_distance = float(weight_distance)
+        self.weight_velocity = float(weight_velocity)
+        self.weight_control = float(weight_control)
+        self.weight_angle = float(weight_angle)
+        self.center_bonus_close = float(center_bonus_close)
+        self.center_bonus_near = float(center_bonus_near)
+        self.stability_bonus_val = float(stability_bonus_val)
+        self.reward_clip_max = float(reward_clip_max)
+        self.progress_weight = float(progress_weight)
+
+        # Servo dynamics (mimic hardware rate limit per control step at ~60-63 Hz)
+        self.use_servo_dynamics = bool(use_servo_dynamics)
+        self.servo_speed_per_step = float(servo_speed_per_step)
     
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -94,11 +116,14 @@ class BallBalanceEnv(gym.Env):
         self.current_step = 0
         self.table_pitch = 0.0
         self.table_roll = 0.0
+        self.table_pitch_target = 0.0
+        self.table_roll_target = 0.0
         self.prev_ball_pos = None
         self.prev_actions = []
         self.small_action_streak = 0
         self.near_center_streak = 0
         self.episode_rewards = []
+        self.prev_dist = None
 
         # Disconnect previous physics
         if self.physics_client is not None:
@@ -188,11 +213,25 @@ class BallBalanceEnv(gym.Env):
         self.current_step += 1
 
         # Scale normalized [-1,1] action to delta radians
-        delta_pitch = action[0] * self.max_delta_angle
-        delta_roll = action[1] * self.max_delta_angle
+        delta_pitch = float(action[0]) * self.max_delta_angle
+        delta_roll = float(action[1]) * self.max_delta_angle
 
-        self.table_pitch = np.clip(self.table_pitch + delta_pitch, -self.limit_angle, self.limit_angle)
-        self.table_roll = np.clip(self.table_roll + delta_roll, -self.limit_angle, self.limit_angle)
+        # Desired (target) angles after applying action, clipped to physical limits
+        desired_pitch = np.clip(self.table_pitch + delta_pitch, -self.limit_angle, self.limit_angle)
+        desired_roll = np.clip(self.table_roll + delta_roll, -self.limit_angle, self.limit_angle)
+
+        if self.use_servo_dynamics:
+            # Rate-limited movement towards desired angles
+            pitch_error = desired_pitch - self.table_pitch
+            roll_error = desired_roll - self.table_roll
+            pitch_step = np.clip(pitch_error, -self.servo_speed_per_step, self.servo_speed_per_step)
+            roll_step = np.clip(roll_error, -self.servo_speed_per_step, self.servo_speed_per_step)
+            self.table_pitch = np.clip(self.table_pitch + pitch_step, -self.limit_angle, self.limit_angle)
+            self.table_roll = np.clip(self.table_roll + roll_step, -self.limit_angle, self.limit_angle)
+        else:
+            # Instant set (no servo dynamics)
+            self.table_pitch = desired_pitch
+            self.table_roll = desired_roll
 
         quat = p.getQuaternionFromEuler([self.table_pitch, self.table_roll, 0])
         p.resetBasePositionAndOrientation(self.table_id, self.table_start_pos, quat)
@@ -253,31 +292,39 @@ class BallBalanceEnv(gym.Env):
         
         # Distance penalty (scaled to be less dominant)
         # Use exponential decay for smoother gradient
-        distance_penalty = -2.0 * (dist / self.table_radius)**2
+        distance_penalty = -self.weight_distance * (dist / self.table_radius)**2
         
         # Velocity penalty (encourage stability)
         velocity = np.sqrt(ball_vx**2 + ball_vy**2)
-        velocity_penalty = -0.5 * min(velocity, 2.0)  # Cap to prevent explosion
+        velocity_penalty = -self.weight_velocity * min(velocity, 2.0)
         
         # Control effort penalty (encourage smooth control)
         action_magnitude = np.linalg.norm(action)
-        control_penalty = -0.05 * action_magnitude
+        control_penalty = -self.weight_control * action_magnitude
         
         # Angle penalty (penalize extreme tilts)
         angle_magnitude = np.sqrt(table_pitch**2 + table_roll**2)
-        angle_penalty = -0.3 * (angle_magnitude / self.limit_angle)
+        angle_penalty = -self.weight_angle * (angle_magnitude / self.limit_angle)
         
         # Bonuses for excellent performance
         center_bonus = 0.0
-        if dist < 0.01:  # Very close to center
-            center_bonus = 3.0
-        elif dist < 0.03:  # Near center
-            center_bonus = 0.5
+        if dist < 0.01:
+            center_bonus = self.center_bonus_close
+        elif dist < 0.03:
+            center_bonus = self.center_bonus_near
         
         # Stability bonus (low velocity near center)
         stability_bonus = 0.0
         if dist < 0.05 and velocity < 0.1:
-            stability_bonus = 1.5
+            stability_bonus = self.stability_bonus_val
+
+        # Progress shaping (reward reducing distance to center per second)
+        progress_bonus = 0.0
+        if self.prev_dist is not None:
+            progress = (self.prev_dist - dist) / self.control_dt
+            # Clip to avoid dominating reward
+            progress_bonus = np.clip(self.progress_weight * progress, -1.0, 1.0)
+        self.prev_dist = dist
         
         # PID guidance (encourage table angles to be close to a PD baseline)
         guidance_bonus = 0.0
@@ -302,10 +349,11 @@ class BallBalanceEnv(gym.Env):
             angle_penalty +
             center_bonus +
             stability_bonus +
+            progress_bonus +
             guidance_bonus
         )
         
-        return float(np.clip(total_reward, -100, 8))
+        return float(np.clip(total_reward, -100, self.reward_clip_max))
     
     def _calculate_reward_sparse(self, obs, action):
         """

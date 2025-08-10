@@ -1231,37 +1231,23 @@ class BallBalanceComparison:
                 else:  # RL
                     pitch_change, roll_change = self.rl_control(observation)
                     
-                    # Pure RL delta
+                    # Pure RL delta applied to current table angles
                     new_table_pitch = self.table_pitch + pitch_change
                     new_table_roll = self.table_roll + roll_change
                     
-                    # IMU Feedback Correction for RL (if IMU available and not in IMU control mode)
+                    # IMU Feedback Correction for RL (align intended new angles with actual IMU angles)
                     if self.imu_connected and self.imu_calibrated:
-                        # Get actual current table angles from IMU
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
-                        
-                        # Calculate error between current simulation angle and actual IMU angle
-                        sim_imu_pitch_error = self.table_pitch - actual_pitch
-                        sim_imu_roll_error = self.table_roll - actual_roll
-                        
-                        # Correct the new target angles based on the simulation vs reality offset
-                        # This compensates for the fact that simulation might be out of sync with reality
-                        corrected_pitch = new_table_pitch - 0.1 * sim_imu_pitch_error
-                        corrected_roll = new_table_roll - 0.1 * sim_imu_roll_error
-                        
-                        # Store feedback info for display (showing sim vs IMU error)
+                        sim_imu_pitch_error = new_table_pitch - actual_pitch
+                        sim_imu_roll_error = new_table_roll - actual_roll
+                        correction_gain = 0.1
+                        new_table_pitch -= correction_gain * sim_imu_pitch_error
+                        new_table_roll  -= correction_gain * sim_imu_roll_error
                         self.imu_feedback_error = (sim_imu_pitch_error, sim_imu_roll_error)
-                        
-                        # Use corrected angles
-                        self.table_pitch = corrected_pitch
-                        self.table_roll = corrected_roll
 
-                        self.table_pitch = new_table_pitch
-                        self.table_roll = new_table_roll
-                    else:
-                        # No IMU feedback - use RL action directly
-                        self.table_pitch = new_table_pitch
-                        self.table_roll = new_table_roll
+                    # Apply (possibly corrected) new angles
+                    self.table_pitch = new_table_pitch
+                    self.table_roll = new_table_roll
                     # Clip to angle limits (use RL-specific limit if provided)
                     limit = self.control_output_limit
                     self.table_pitch = np.clip(self.table_pitch, -limit, limit)
