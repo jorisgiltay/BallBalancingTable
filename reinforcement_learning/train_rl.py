@@ -169,10 +169,13 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
         tensorboard_log="./tensorboard_logs/"
     )
 
-    # Adaptive early stopping threshold (approximate max reward = control_freq * episode_duration)
-    episode_duration = 30  # seconds, adjust as needed for your env
-    max_possible_reward = control_freq * episode_duration
-    reward_threshold = max_possible_reward * 0.9
+    # Adaptive early stopping threshold
+    # Baseline survival ~ 1 reward/step → baseline_total = control_freq * episode_duration
+    # With bonuses and shaping, a good policy averages ~3 reward/step; use 90% of that as threshold
+    episode_duration = 30  # seconds
+    baseline_total = control_freq * episode_duration
+    expected_per_step_reward = 3.0
+    reward_threshold = 0.9 * expected_per_step_reward * baseline_total
 
     callbacks = []
 
@@ -188,7 +191,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
 
     if use_early_stopping:
         callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-        print(f"Early stopping threshold set at {reward_threshold:.1f} (90% of estimated max reward)")
+        print(f"Early stopping threshold set at {reward_threshold:.1f} (~90% of {expected_per_step_reward:.1f} per-step target)")
 
         eval_callback = EvalCallback(
             eval_env,
@@ -213,7 +216,10 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
 
     callbacks.append(eval_callback)
 
+    # Unique TB run name
+    log_name = f"SAC_{time.strftime('%Y%m%d-%H%M%S')}"
     print("Starting training...")
+    print(f"🧪 TensorBoard run: {log_name}")
     if not start_tensorboard:
         print("📊 Monitor training with: tensorboard --logdir=./tensorboard_logs/")
     print("💾 Checkpoints saved every 10k steps to ./checkpoints/")
@@ -241,8 +247,17 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
         while steps_done < total_steps:
             remaining = total_steps - steps_done
             chunk = min(50_000, remaining)
-            model.learn(total_timesteps=chunk, callback=callbacks, progress_bar=True, reset_num_timesteps=False)
+            model.learn(total_timesteps=chunk, callback=callbacks, progress_bar=True, reset_num_timesteps=False, tb_log_name=log_name)
             steps_done += chunk
+
+            # Stop outer loop if early stopping threshold met during this chunk
+            try:
+                if hasattr(eval_callback, "best_mean_reward") and eval_callback.best_mean_reward is not None:
+                    if eval_callback.best_mean_reward >= reward_threshold:
+                        print("🏁 Early stopping threshold reached globally; ending training loop.")
+                        break
+            except Exception:
+                pass
 
             if use_curriculum and steps_done in milestones:
                 try:
