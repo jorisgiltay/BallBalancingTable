@@ -8,9 +8,10 @@ import time
 import math
 import csv
 import numpy as np
+import json
 
 class ServoController:
-    def __init__(self, device_name='COM5', baudrate=1000000, servo_ids=[1, 2]):
+    def __init__(self, device_name='COM5', baudrate=1000000, servo_ids=[1, 2], kinematics_file: str = 'servo/servo_kinematics.json'):
         # Setup Parameters
         self.device_name = device_name
         self.baudrate = baudrate
@@ -45,11 +46,27 @@ class ServoController:
         
         # Connection status
         self.connected = False
+
+        # Kinematic correction (to compensate arm length asymmetry / biases)
+        # Table-angle corrections before mapping to servo positions
+        self.pitch_offset_rad = 0.0
+        self.roll_offset_rad = 0.0
+        self.pitch_gain = 1.0
+        self.roll_gain = 1.0
+        # Cross-coupling: pitch command influenced by roll and vice-versa
+        # pitch_cmd = pitch_gain * pitch + c_pr * roll + pitch_offset
+        # roll_cmd  = roll_gain  * roll  + c_rp * pitch + roll_offset
+        self.c_pr = 0.0
+        self.c_rp = 0.0
         
         print(f"🤖 Servo Controller initialized:")
         print(f"   Range: {self.DXL_MIN_POS} to {self.DXL_MAX_POS} (centers: {self.DXL_CENTER_POSITIONS})")
         print(f"   Max table angle: ±{math.degrees(self.MAX_TABLE_ANGLE_RAD):.1f}°")
         print(f"   Conversion: {self.STEPS_PER_RADIAN:.0f} steps/radian")
+
+        # Attempt to load kinematic correction file (optional)
+        self.kinematics_file = kinematics_file
+        self.load_kinematic_corrections(self.kinematics_file)
 
     def load_calibration_data(self, pitch_file='servo_calib_pitch.csv', roll_file='servo_calib_roll.csv'):
         """Load calibration CSV files and enable calibrated mapping"""
@@ -169,10 +186,14 @@ class ServoController:
             print("⚠️ Servos not connected")
             return False
         try:
+            # Apply kinematic corrections (bias/gain/cross-coupling)
+            pitch_cmd = (self.pitch_gain * pitch_rad) + (self.c_pr * roll_rad) + self.pitch_offset_rad
+            roll_cmd  = (self.roll_gain  * roll_rad)  + (self.c_rp * pitch_rad) + self.roll_offset_rad
+
             # Hardware mapping: servo_ids[0] (ID 1) controls pitch, servo_ids[1] (ID 2) controls roll
             # Note: ID 2 has inverted sign - positive servo command = negative roll
-            pitch_pos = self.angle_to_servo_position(pitch_rad, 0)
-            roll_pos = self.angle_to_servo_position(-roll_rad, 1)  # Invert roll for hardware
+            pitch_pos = self.angle_to_servo_position(pitch_cmd, 0)
+            roll_pos = self.angle_to_servo_position(-roll_cmd, 1)  # Invert roll for hardware
             # Clear previous parameters
             self.group_sync_write.clearParam()
             # Add servo commands - correct order: [pitch_pos, roll_pos] for [ID1, ID2]
@@ -190,6 +211,60 @@ class ServoController:
             return True
         except Exception as e:
             print(f"❌ Servo control error: {e}")
+            return False
+
+    def load_kinematic_corrections(self, filename: str) -> bool:
+        """Load kinematic correction (gain/offset/cross-coupling) from JSON file.
+
+        JSON schema example:
+        {
+          "pitch_offset_deg": 0.5,
+          "roll_offset_deg": -0.4,
+          "pitch_gain": 1.03,
+          "roll_gain": 0.98,
+          "c_pr": 0.05,   # pitch += c_pr * roll
+          "c_rp": -0.03   # roll += c_rp * pitch
+        }
+        """
+        try:
+            with open(filename, 'r') as f:
+                data = json.load(f)
+            self.pitch_offset_rad = math.radians(float(data.get('pitch_offset_deg', 0.0)))
+            self.roll_offset_rad = math.radians(float(data.get('roll_offset_deg', 0.0)))
+            self.pitch_gain = float(data.get('pitch_gain', 1.0))
+            self.roll_gain = float(data.get('roll_gain', 1.0))
+            self.c_pr = float(data.get('c_pr', 0.0))
+            self.c_rp = float(data.get('c_rp', 0.0))
+            print("🔧 Loaded kinematic corrections:")
+            print(f"   pitch_offset: {math.degrees(self.pitch_offset_rad):+.3f}°  roll_offset: {math.degrees(self.roll_offset_rad):+.3f}°")
+            print(f"   pitch_gain: {self.pitch_gain:.3f}  roll_gain: {self.roll_gain:.3f}")
+            print(f"   c_pr: {self.c_pr:+.3f}  c_rp: {self.c_rp:+.3f}")
+            return True
+        except FileNotFoundError:
+            print(f"ℹ️ No kinematic corrections file found ({filename}). Using defaults.")
+            return False
+        except Exception as e:
+            print(f"⚠️ Failed to load kinematic corrections: {e}")
+            return False
+
+    def save_kinematic_corrections(self, filename: str | None = None) -> bool:
+        """Save current kinematic correction parameters to JSON file."""
+        try:
+            path = filename or self.kinematics_file
+            data = {
+                'pitch_offset_deg': math.degrees(self.pitch_offset_rad),
+                'roll_offset_deg': math.degrees(self.roll_offset_rad),
+                'pitch_gain': self.pitch_gain,
+                'roll_gain': self.roll_gain,
+                'c_pr': self.c_pr,
+                'c_rp': self.c_rp,
+            }
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"💾 Saved kinematic corrections to {path}")
+            return True
+        except Exception as e:
+            print(f"⚠️ Failed to save kinematic corrections: {e}")
             return False
     
     def set_table_angles_degrees(self, pitch_deg, roll_deg):

@@ -995,6 +995,9 @@ class BallBalanceComparison:
         try:
             obs = observation.copy()
             x, y, vx, vy = obs[0], obs[1], obs[2], obs[3]
+            # Present error relative to current setpoint so RL tracks targets like PID
+            x -= self.setpoint_x
+            y -= self.setpoint_y
             # Swap axes if requested
             if self.rl_swap_axes:
                 x, y = y, x

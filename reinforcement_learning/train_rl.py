@@ -170,12 +170,11 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
     )
 
     # Adaptive early stopping threshold
-    # Baseline survival ~ 1 reward/step → baseline_total = control_freq * episode_duration
-    # With bonuses and shaping, a good policy averages ~3 reward/step; use 90% of that as threshold
+    # With stronger damping/jerk penalties and target tracking, expect ~2.5–3.5 reward/step once stable
     episode_duration = 30  # seconds
     baseline_total = control_freq * episode_duration
-    expected_per_step_reward = 3.0
-    reward_threshold = 0.9 * expected_per_step_reward * baseline_total
+    expected_per_step_reward = 3.2
+    reward_threshold = 0.85 * expected_per_step_reward * baseline_total
 
     callbacks = []
 
@@ -191,7 +190,7 @@ def train_rl_agent(use_early_stopping=True, use_curriculum=False, render_trainin
 
     if use_early_stopping:
         callback_on_best = StopTrainingOnRewardThreshold(reward_threshold=reward_threshold, verbose=1)
-        print(f"Early stopping threshold set at {reward_threshold:.1f} (~90% of {expected_per_step_reward:.1f} per-step target)")
+        print(f"Early stopping threshold set at {reward_threshold:.1f} (~85% of {expected_per_step_reward:.1f} per-step target)")
 
         eval_callback = EvalCallback(
             eval_env,

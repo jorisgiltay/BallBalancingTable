@@ -21,7 +21,10 @@ class BallBalanceEnv(gym.Env):
                  weight_distance=2.0, weight_velocity=0.9, weight_control=0.05, weight_angle=0.30,
                  center_bonus_close=3.0, center_bonus_near=0.5, stability_bonus_val=1.5,
                  reward_clip_max=8.0, progress_weight=0.10, weight_jerk=0.08,
-                 use_servo_dynamics=True, servo_speed_per_step=0.01):
+                 use_servo_dynamics=True, servo_speed_per_step=0.01,
+                 use_target=True, randomize_target=True, target_range=0.08,
+                 randomize_actuation_bias=True, act_offset_deg_range=1.0,
+                 act_gain_range=0.05, act_coupling_range=0.05, act_speed_jitter=0.2):
         super().__init__()
         
         self.render_mode = render_mode
@@ -62,6 +65,12 @@ class BallBalanceEnv(gym.Env):
         self.table_roll = 0.0
         self.table_pitch_target = 0.0
         self.table_roll_target = 0.0
+        # Target (setpoint) handling for tracking tasks
+        self.use_target = bool(use_target)
+        self.randomize_target = bool(randomize_target)
+        self.target_range = float(target_range)
+        self.target_x = 0.0
+        self.target_y = 0.0
         self.prev_ball_pos = None
         self.prev_actions = []
         self.small_action_streak = 0
@@ -111,6 +120,21 @@ class BallBalanceEnv(gym.Env):
         # Servo dynamics (mimic hardware rate limit per control step at ~60-63 Hz)
         self.use_servo_dynamics = bool(use_servo_dynamics)
         self.servo_speed_per_step = float(servo_speed_per_step)
+
+        # Actuation bias/coupling randomization (sim-to-real robustness)
+        self.randomize_actuation_bias = bool(randomize_actuation_bias)
+        self.act_offset_deg_range = float(act_offset_deg_range)
+        self.act_gain_range = float(act_gain_range)
+        self.act_coupling_range = float(act_coupling_range)
+        self.act_speed_jitter = float(act_speed_jitter)
+        # Per-episode sampled parameters
+        self.act_pitch_offset = 0.0  # radians
+        self.act_roll_offset = 0.0   # radians
+        self.act_pitch_gain = 1.0
+        self.act_roll_gain = 1.0
+        self.act_c_pr = 0.0
+        self.act_c_rp = 0.0
+        self.act_servo_speed_factor = 1.0
     
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -120,6 +144,13 @@ class BallBalanceEnv(gym.Env):
         self.table_roll = 0.0
         self.table_pitch_target = 0.0
         self.table_roll_target = 0.0
+        # Choose new target each episode if enabled
+        if self.use_target and self.randomize_target:
+            self.target_x = float(np.random.uniform(-self.target_range, self.target_range))
+            self.target_y = float(np.random.uniform(-self.target_range, self.target_range))
+        else:
+            self.target_x = 0.0
+            self.target_y = 0.0
         self.prev_ball_pos = None
         self.prev_actions = []
         self.small_action_streak = 0
@@ -187,6 +218,24 @@ class BallBalanceEnv(gym.Env):
             basePosition=ball_start_pos
         )
 
+        # Sample actuation bias/coupling for this episode
+        if self.randomize_actuation_bias:
+            self.act_pitch_offset = np.radians(np.random.uniform(-self.act_offset_deg_range, self.act_offset_deg_range))
+            self.act_roll_offset  = np.radians(np.random.uniform(-self.act_offset_deg_range, self.act_offset_deg_range))
+            self.act_pitch_gain = 1.0 + np.random.uniform(-self.act_gain_range, self.act_gain_range)
+            self.act_roll_gain  = 1.0 + np.random.uniform(-self.act_gain_range, self.act_gain_range)
+            self.act_c_pr = np.random.uniform(-self.act_coupling_range, self.act_coupling_range)
+            self.act_c_rp = np.random.uniform(-self.act_coupling_range, self.act_coupling_range)
+            self.act_servo_speed_factor = 1.0 + np.random.uniform(-self.act_speed_jitter, self.act_speed_jitter)
+        else:
+            self.act_pitch_offset = 0.0
+            self.act_roll_offset = 0.0
+            self.act_pitch_gain = 1.0
+            self.act_roll_gain = 1.0
+            self.act_c_pr = 0.0
+            self.act_c_rp = 0.0
+            self.act_servo_speed_factor = 1.0
+
         # Randomize physics params
         ball_mass = np.random.uniform(self.ball_mass_low, self.ball_mass_high)
         ball_friction = np.random.uniform(self.friction_low, self.friction_high)
@@ -219,16 +268,23 @@ class BallBalanceEnv(gym.Env):
         delta_pitch = float(action[0]) * self.max_delta_angle
         delta_roll = float(action[1]) * self.max_delta_angle
 
-        # Desired (target) angles after applying action, clipped to physical limits
-        desired_pitch = np.clip(self.table_pitch + delta_pitch, -self.limit_angle, self.limit_angle)
-        desired_roll = np.clip(self.table_roll + delta_roll, -self.limit_angle, self.limit_angle)
+        # Desired (target) angles after applying action (pre-bias), clipped to physical limits
+        base_desired_pitch = np.clip(self.table_pitch + delta_pitch, -self.limit_angle, self.limit_angle)
+        base_desired_roll = np.clip(self.table_roll + delta_roll, -self.limit_angle, self.limit_angle)
+
+        # Apply actuation bias/gain/cross-coupling to desired angles
+        desired_pitch = self.act_pitch_offset + (self.act_pitch_gain * base_desired_pitch) + (self.act_c_pr * base_desired_roll)
+        desired_roll  = self.act_roll_offset  + (self.act_roll_gain  * base_desired_roll)  + (self.act_c_rp * base_desired_pitch)
+        desired_pitch = float(np.clip(desired_pitch, -self.limit_angle, self.limit_angle))
+        desired_roll  = float(np.clip(desired_roll,  -self.limit_angle, self.limit_angle))
 
         if self.use_servo_dynamics:
             # Rate-limited movement towards desired angles
             pitch_error = desired_pitch - self.table_pitch
             roll_error = desired_roll - self.table_roll
-            pitch_step = np.clip(pitch_error, -self.servo_speed_per_step, self.servo_speed_per_step)
-            roll_step = np.clip(roll_error, -self.servo_speed_per_step, self.servo_speed_per_step)
+            step_limit = self.servo_speed_per_step * self.act_servo_speed_factor
+            pitch_step = np.clip(pitch_error, -step_limit, step_limit)
+            roll_step = np.clip(roll_error, -step_limit, step_limit)
             self.table_pitch = np.clip(self.table_pitch + pitch_step, -self.limit_angle, self.limit_angle)
             self.table_roll = np.clip(self.table_roll + roll_step, -self.limit_angle, self.limit_angle)
         else:
@@ -263,18 +319,22 @@ class BallBalanceEnv(gym.Env):
             ball_vy = (ball_y - self.prev_ball_pos[1]) / self.control_dt
         self.prev_ball_pos = [ball_x, ball_y]
 
+        # Compute relative error to target when targets are enabled
+        err_x = ball_x - (self.target_x if self.use_target else 0.0)
+        err_y = ball_y - (self.target_y if self.use_target else 0.0)
+
         # Optional observation noise (positions/velocities only)
         if self.add_obs_noise:
             noise_px = np.random.normal(0.0, self.obs_noise_std_pos)
             noise_py = np.random.normal(0.0, self.obs_noise_std_pos)
             noise_vx = np.random.normal(0.0, self.obs_noise_std_vel)
             noise_vy = np.random.normal(0.0, self.obs_noise_std_vel)
-            ball_x_noisy = ball_x + noise_px
-            ball_y_noisy = ball_y + noise_py
+            ball_x_noisy = err_x + noise_px
+            ball_y_noisy = err_y + noise_py
             ball_vx_noisy = ball_vx + noise_vx
             ball_vy_noisy = ball_vy + noise_vy
         else:
-            ball_x_noisy, ball_y_noisy = ball_x, ball_y
+            ball_x_noisy, ball_y_noisy = err_x, err_y
             ball_vx_noisy, ball_vy_noisy = ball_vx, ball_vy
 
         return np.array([ball_x_noisy, ball_y_noisy, ball_vx_noisy, ball_vy_noisy, self.table_pitch, self.table_roll], dtype=np.float32)
@@ -284,6 +344,7 @@ class BallBalanceEnv(gym.Env):
         Improved reward function that encourages both survival and good balancing
         """
         ball_x, ball_y, ball_vx, ball_vy, table_pitch, table_roll = obs
+        # Note: ball_x, ball_y are already relative errors to target
         dist = np.sqrt(ball_x**2 + ball_y**2)
         
         # Terminal penalty for falling off
@@ -336,13 +397,13 @@ class BallBalanceEnv(gym.Env):
             progress_bonus = np.clip(self.progress_weight * progress, -1.0, 1.0)
         self.prev_dist = dist
         
-        # PID guidance (encourage table angles to be close to a PD baseline)
+        # PID guidance (encourage table angles to be close to a PD baseline tracking the target)
         guidance_bonus = 0.0
         if self.use_pid_guidance:
             # PD baseline angles (absolute), clipped to physical limits
             # Sign convention matches compare_control PID: pitch ~ -PID(x), roll ~ +PID(y)
-            pid_pitch_target = - (self.pid_kp * ball_x + self.pid_kd * ball_vx)
-            pid_roll_target  =   (self.pid_kp * ball_y + self.pid_kd * ball_vy)
+            pid_pitch_target = - (self.pid_kp * (ball_x) + self.pid_kd * ball_vx)
+            pid_roll_target  =   (self.pid_kp * (ball_y) + self.pid_kd * ball_vy)
             pid_pitch_target = float(np.clip(pid_pitch_target, -self.limit_angle, self.limit_angle))
             pid_roll_target  = float(np.clip(pid_roll_target,  -self.limit_angle, self.limit_angle))
 
@@ -418,11 +479,39 @@ class BallBalanceEnv(gym.Env):
         """Adjust environment difficulty. Stages: 'easy', 'medium', 'hard'"""
         stage = stage.lower()
         if stage == 'easy':
+            # Start close to center, conservative moves, fixed/near target
             self.spawn_range = 0.05
-            self.max_delta_angle = self.limit_angle / 4  # smaller per-step change
+            self.max_delta_angle = self.limit_angle / 4
+            self.use_target = True
+            self.randomize_target = False
+            self.target_range = 0.0
+            # Small biases
+            self.act_offset_deg_range = 0.2
+            self.act_gain_range = 0.01
+            self.act_coupling_range = 0.01
+            self.act_speed_jitter = 0.05
+            self.servo_speed_per_step = 0.012
         elif stage == 'medium':
             self.spawn_range = 0.08
             self.max_delta_angle = self.limit_angle / 3
+            self.use_target = True
+            self.randomize_target = True
+            self.target_range = 0.06
+            # Moderate biases
+            self.act_offset_deg_range = 0.5
+            self.act_gain_range = 0.03
+            self.act_coupling_range = 0.03
+            self.act_speed_jitter = 0.15
+            self.servo_speed_per_step = 0.011
         else:  # 'hard' or default
             self.spawn_range = 0.10
             self.max_delta_angle = self.limit_angle / 2
+            self.use_target = True
+            self.randomize_target = True
+            self.target_range = 0.08
+            # Full bias ranges
+            self.act_offset_deg_range = 1.0
+            self.act_gain_range = 0.05
+            self.act_coupling_range = 0.05
+            self.act_speed_jitter = 0.20
+            self.servo_speed_per_step = 0.01
