@@ -1,410 +1,305 @@
 # Ball Balancing Table
 
-A complete ball balancing control system with **simulation**, **camera integration**, and **hardware control**. Features PID and Reinforcement Learning controllers with real-time visual monitoring and servo control for physical deployment.
+A complete ball balancing control system featuring advanced reinforcement learning with sim-to-real transfer, PID control, and real hardware integration. The system uses PyBullet simulation, camera integration, IMU feedback, and Dynamixel servo control for robust real-world deployment.
 
-![PyBullet Simulation](media/sim.png)
-*PyBullet physics simulation for algorithm development*
+## 🎯 Key Features
 
-![Real Hardware Setup](media/real_setup.jpeg)
-*Complete physical setup with RealSense D435i camera and servo-controlled platform*
-
-## 🎯 Features
-
-### Unified Control System
-- **🎛️ PID Control**: Traditional control with tuned parameters
-- **🤖 Reinforcement Learning**: PPO agent with advanced reward engineering  
-- **📷 Camera Integration**: RealSense camera for real-world ball tracking
-- **🦾 Servo Control**: Dynamixel servo integration for hardware deployment
+### Control Methods
+- **🎛️ PID Control**: Well-tuned traditional controller with IMU feedback correction
+- **🤖 SAC Reinforcement Learning**: Advanced RL with curriculum learning, domain randomization, and target tracking
+- **📐 LQR Control**: Linear-Quadratic Regulator for comparison
 - **⚡ Real-time Switching**: Change control methods during operation
 
 ### Operating Modes
 - **🖥️ Pure Simulation**: PyBullet physics simulation only
-- **🔗 Hybrid Mode**: Camera input + simulated physics for testing
-- **🏗️ Hardware Mode**: Full camera + servo deployment
+- **🔗 Hybrid Mode**: Camera input with simulated physics for testing
+- **🏗️ Hardware Mode**: Full camera + servo + IMU deployment
 
-![Hybrid Mode Demo](media/hybrid_mode.gif)
-*Real-time hybrid mode: camera tracking with simulation physics*
-
-![Disturbance Handling](media/Disturbance.gif)
-*Robust control response to external disturbances*
-
-### Visual Dashboard
-- **📊 Real-time Monitoring**: Live ball position, control actions, and performance metrics
-- **🎨 Professional Interface**: Clean, dark-themed dashboard with color-coded status
-- **📈 Performance Analysis**: Distance tracking, velocity monitoring, and control efficiency
-
-![PID Control Dashboard](media/matplotlib_PID.png)
-*Real-time PID controller dashboard with performance metrics*
-
-![PID Control Demo](media/PID.gif)
-*PID control demonstration showing stable ball positioning*
-
-![RL Control Dashboard](media/matplotlib_RL.png)
-*Reinforcement learning controller dashboard with training metrics*
+### Advanced RL Features
+- **🎯 Target Tracking**: RL learns to drive ball to arbitrary setpoints, not just center
+- **🔄 Curriculum Learning**: Progressive difficulty from easy to challenging scenarios
+- **🎲 Domain Randomization**: Actuation biases, servo dynamics, and physics variation
+- **🦾 Servo Dynamics**: Rate-limited servo movement matching real hardware (60-63Hz)
+- **📊 PID Guidance**: Reward shaping using PD baseline for stable, damped behavior
+- **🎚️ Anti-Oscillation**: Jerk penalties and velocity weighting to prevent chattering
 
 ## 🚀 Quick Start
 
-### 1. Installation
+### Installation
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Setup project (creates all necessary directories)
+# Setup project directories
 python setup.py
 ```
 
-### 2. Basic Simulation
+### Basic Usage
 ```bash
-# Pure simulation with PID control
-python compare_control.py --control pid --visuals
+# Pure simulation with PID
+python compare_control.py --control pid --freq 60 --visuals
 
-# Test RL control (if model available)
-python compare_control.py --control rl --visuals
+# Test trained RL model
+python compare_control.py --control rl --freq 60 --visuals
+
+# Hardware deployment with IMU
+python compare_control.py --camera real --servos --imu --freq 60
 ```
 
-### 3. Train RL Agent
+### Train New RL Models
 ```bash
-# Navigate to RL directory
 cd reinforcement_learning
 
-# Train with TensorBoard monitoring
-python train_rl.py --mode train --tensorboard
+# Train with curriculum and domain randomization
+python train_rl.py --mode train --freq 60 --tensorboard --curriculum
 
 # Test trained model
-python train_rl.py --mode test
+python train_rl.py --mode test --freq 60 --model ./models/best_model.zip
 
-# Return to main directory
 cd ..
-```
-
-### 4. Camera Integration
-```bash
-# Calibrate camera first (requires RealSense + blue markers)
-python compare_control.py --camera hybrid --calibrate
-
-# Run hybrid mode with camera input
-python compare_control.py --camera hybrid --visuals
-```
-
-### 5. Hardware Deployment
-```bash
-# Full hardware mode with servos
-python compare_control.py --camera real --servos --calibrate
 ```
 
 ## 🎮 Interactive Controls
 
-**Keyboard shortcuts during operation:**
+**During operation:**
 - `r` - Reset ball position
-- `f` - Toggle fixed/random ball positions  
+- `f` - Toggle fixed/random ball spawn
 - `p` - Switch to PID control
 - `l` - Switch to RL control
+- `c` - Calibrate IMU offsets (hardware mode)
 - `q` - Quit
+- **Arrow keys/WASD** - Manual setpoint control
+
+## 🤖 Advanced RL Training
+
+### Current Training Environment
+The RL system is designed for robust sim-to-real transfer:
+
+**Observation Space**: `[ball_x_error, ball_y_error, ball_vx, ball_vy, table_pitch, table_roll]`
+- Ball positions are relative to target setpoint
+- Includes optional observation noise for robustness
+
+**Action Space**: Normalized `[-1, 1]` scaled to table angle deltas
+- Actions are rate-limited to match real servo dynamics
+- Includes actuation bias randomization (offsets, gains, cross-coupling)
+
+**Reward Function** (carefully tuned for stability):
+- **Distance penalty**: Exponential decay based on error to target
+- **Velocity penalty**: Strong weighting (0.9) to encourage stillness
+- **Control effort**: Light penalty (0.05) on action magnitude
+- **Jerk penalty**: New addition (0.08) to prevent oscillation
+- **Angle penalty**: Penalize extreme table tilts
+- **Progress bonus**: Reward for reducing distance to target
+- **PID guidance**: Bonus for following PD baseline behavior
+- **Stability bonuses**: Extra reward for precise, still positioning
+
+### Curriculum Learning
+Three progressive stages automatically applied during training:
+
+1. **Easy** (0-200k steps):
+   - Small spawn range (±5cm)
+   - Fixed center target
+   - Minimal actuation biases
+   - Conservative angle changes
+
+2. **Medium** (200k-500k steps):
+   - Larger spawn range (±8cm)
+   - Randomized targets (±6cm)
+   - Moderate biases and coupling
+
+3. **Hard** (500k+ steps):
+   - Full table coverage (±10cm)
+   - Wide target range (±8cm)
+   - Full actuation bias randomization
+   - Maximum servo speed jitter
+
+### Domain Randomization
+Per-episode randomization includes:
+- **Physics**: Ball mass (1.8-2.2g), friction (0.22-0.30)
+- **Actuation biases**: Servo offsets (±1°), gains (±5%), cross-coupling (±5%)
+- **Servo dynamics**: Speed jitter (±20%) around 60Hz rate limiting
+- **Observation noise**: Position (0.001m) and velocity (0.02m/s) Gaussian noise
+
+### Training Commands
+```bash
+cd reinforcement_learning
+
+# Standard training with all features
+python train_rl.py --mode train --freq 60 --tensorboard --curriculum
+
+# Extended training without early stopping
+python train_rl.py --mode train --freq 60 --tensorboard --curriculum --no-early-stop
+
+# Resume from checkpoint
+python train_rl.py --mode train --resume-from checkpoints/checkpoint_500000_steps
+
+# Test specific model
+python train_rl.py --mode test --model ./models/best_model.zip
+```
+
+## 🦾 Hardware Integration
+
+### Servo System (Dynamixel)
+- **Models**: XL430-W250-T or similar
+- **Communication**: 1 Mbps, 60-63Hz update rate
+- **IDs**: 1 (pitch), 2 (roll)
+- **Range**: ±9° table movement
+- **Kinematic Corrections**: Optional bias compensation via `servo_kinematics.json`
+
+### IMU Integration (BNO055)
+- **Real-time angle correction**: Compensates for servo/mechanical imperfections
+- **Calibration**: Built-in offset calibration (press 'c' during operation)
+- **RL Integration**: 0.2 correction gain for RL controller on hardware
+
+### Camera System (RealSense D435i)
+- **Ball tracking**: HSV-based detection with filtering
+- **Coordinate mapping**: Automatic table-to-camera transformation
+- **Modes**: Hybrid (sim physics) or Real (hardware physics)
 
 ## ⚙️ Configuration Options
 
-### Camera Modes
-- `--camera simulation` - Pure PyBullet simulation (default)
-- `--camera hybrid` - Camera input + simulated physics  
-- `--camera real` - Camera only for hardware deployment
-
-### Control Options
-- `--control pid` - Start with PID controller (default)
-- `--control rl` - Start with RL controller
-- `--freq 50` - Control frequency in Hz (default: 50)
-
-### Hardware Integration
-- `--servos` - Enable Dynamixel servo control
-- `--calibrate` - Run camera calibration before starting
-- `--visuals` - Enable real-time dashboard
-
-### Example Commands
+### Control Flags
 ```bash
-# Development: Hybrid mode with visuals
-python compare_control.py --camera hybrid --visuals --servos
-
-# Hardware: Full deployment
-python compare_control.py --camera real --servos --calibrate
-
-# Simulation: Performance testing  
-python compare_control.py --control rl --freq 100 --visuals
+--control [pid|rl|lqr]     # Controller type
+--freq 60                  # Control frequency (Hz)
+--visuals                  # Enable real-time dashboard
 ```
 
-## 🔧 Hardware Setup
+### Camera Modes
+```bash
+--camera simulation        # Pure PyBullet (default)
+--camera hybrid           # Camera + simulation physics
+--camera real             # Camera + hardware physics
+```
 
-### Camera System
-- **Intel RealSense D435i** (or compatible)
-- **35×35cm wooden base plate** with 4 blue corner markers
-- **Camera positioned above table** for full table view
+### Hardware Flags
+```bash
+--servos                  # Enable Dynamixel control
+--imu                     # Enable IMU feedback
+--imu-port COM3           # IMU serial port
+--calibrate              # Run camera calibration
+```
 
-![Embedded BNO055](media/Embedded_BNO055.jpeg)
-*Embedded BNO055 IMU sensor for additional feedback*
-
-### Servo System  
-- **2× Dynamixel servos** (XM430-W350 or similar)
-- **USB interface** (U2D2 or compatible)
-- **Kinematic model**: Half servo range = 3° table movement
-
-![Servos](media/servos.jpeg)
-*Dynamixel servo configuration with mounting hardware*
-
-![Yaw Constraint Slider](media/yaw_constraint.jpeg)
-*Mechanical constraint system for controlled platform movement*
-
-### Calibration Requirements
-- 4× **4cm blue markers** at base plate corners
-- **Good lighting** for consistent marker detection
-- **No ball on table** during calibration
+### RL-Specific Flags
+```bash
+--rl-swap-axes           # Swap X/Y observation axes
+--rl-invert-x            # Invert X axis observation
+--rl-invert-y            # Invert Y axis observation
+```
 
 ## 📁 Project Structure
 
 ```
-├── compare_control.py         # 🎯 Main unified control system
-├── pid_controller.py          # 🎛️ PID controller implementation
-├── setup.py                   # 🔧 Project setup and initialization
-├── requirements.txt           # 📦 Python dependencies
-├── servo/                     # 🦾 Hardware control
-│   ├── servo_controller.py    # 🎛️ Servo control with kinematics
-│   └── servo_test.py          # 🧪 Servo testing utilities
-├── camera/                    # 📷 Vision system
-│   ├── camera_interface.py    # 📷 Camera integration & ball detection
-│   └── camera_calibration_color.py # 🎯 Camera calibration tool
-├── imu/                       # 🧭 IMU integration
-│   └── imu_simple.py          # 📐 IMU feedback system
-├── reinforcement_learning/    # 🤖 RL training system
-│   ├── train_rl.py           # 🚀 RL training with TensorBoard
-│   ├── ball_balance_env.py   # 🏋️ Training environment
-│   ├── recovery_tool.py      # 🔄 Training checkpoint management
-│   ├── models/               # � Trained RL models
-│   ├── tensorboard_logs/     # 📊 Training monitoring
-│   └── checkpoints/          # � Training checkpoints
-├── calibration_data/         # 📐 Camera calibration files
-├── models/                   # 🧠 Main directory models (legacy)
-└── media/                    # 📸 Documentation images
+├── compare_control.py              # Main control system with PID/RL/LQR
+├── pid_controller.py               # PID implementation
+├── lqr_controller.py               # LQR implementation
+├── servo/
+│   ├── servo_controller.py         # Dynamixel control with kinematic corrections
+│   ├── servo_kinematics.json       # Bias compensation parameters
+│   └── servo_test.py               # Hardware testing utilities
+├── camera/
+│   ├── camera_interface.py         # RealSense integration
+│   └── camera_calibration_color.py # Calibration tools
+├── imu/
+│   └── imu_simple.py               # BNO055 IMU interface
+├── reinforcement_learning/
+│   ├── train_rl.py                 # SAC training with curriculum
+│   ├── ball_balance_env.py         # Advanced training environment
+│   ├── models/                     # Trained models
+│   ├── tensorboard_logs/           # Training monitoring
+│   └── checkpoints/                # Training checkpoints
+├── calibration_data/               # Camera calibration files
+└── requirements.txt                # Python dependencies
 ```
 
-## 🎯 Current State & Next Steps
+## 🎯 Current State & Performance
 
 ### ✅ Completed Features
-- **Unified Control Framework**: PID and RL comparison system
-- **Hardware Integration**: Servo control, camera integration, IMU feedback
-- **Visual Monitoring**: Real-time dashboard and TensorBoard integration
-- **Modular Architecture**: Organized codebase with clear separation
+- **Robust RL Training**: Curriculum learning with domain randomization
+- **Sim-to-Real Transfer**: Servo dynamics, bias randomization, IMU correction
+- **Target Tracking**: RL learns to drive ball to arbitrary setpoints
+- **Hardware Integration**: Full servo + camera + IMU deployment
+- **Anti-Oscillation**: Jerk penalties and velocity weighting prevent chattering
+- **TensorBoard Monitoring**: Unique run naming and comprehensive metrics
 
-### 🚧 Current Focus: Simulation-to-Real Transfer
-The project is now focused on improving **simulation accuracy** and **RL transfer learning** for robust real-world deployment:
+### 🎯 Performance Characteristics
+- **PID Controller**: "Snappy" and stable with IMU correction, excellent hardware performance
+- **RL Controller**: Converges after ~1.2-1.8M steps with current reward shaping
+  - Tracks setpoints like PID
+  - Benefits from IMU correction (0.2 gain) on hardware
+  - Robust to actuation biases through training randomization
 
-#### **Simulation Accuracy Improvements Needed:**
-- **Physical Parameters**: Fine-tune ball mass, friction, air resistance
-- **Sensor Modeling**: Add realistic camera noise, IMU drift, servo backlash
-- **Timing Accuracy**: Match real hardware control frequencies and delays
-- **Environmental Factors**: Lighting variations, surface imperfections
-
-#### **RL Transfer Learning Strategy:**
-- **Domain Randomization**: Vary physical parameters during training
-- **Progressive Training**: Start simple, gradually add complexity
-- **Real-World Data**: Incorporate actual system measurements
-- **Robust Reward Design**: Reward functions that generalize across domains
-
-### 🎯 Planned Enhancements
-1. **Enhanced Physics Simulation**
-   - More accurate ball-table contact modeling
-   - Realistic servo dynamics and limitations
-   - Environmental disturbance simulation
-
-2. **Advanced RL Training**
-   - Multi-environment training with domain randomization
-   - Curriculum learning for progressive difficulty
-   - Meta-learning for quick adaptation to new conditions
-
-3. **Transfer Learning Pipeline**
-   - Systematic sim-to-real validation framework
-   - Performance metrics for transfer quality assessment
-   - Automated hyperparameter optimization
-
-## 🤖 Reinforcement Learning
-
-### Training New Models
-```bash
-# Navigate to RL directory
-cd reinforcement_learning
-
-# Train RL agent with TensorBoard monitoring
-python train_rl.py --mode train --tensorboard --freq 60
-
-# Train without early stopping for full convergence
-python train_rl.py --mode train --no-early-stop --tensorboard
-
-# Test trained model
-python train_rl.py --mode test
-
-# Return to main directory for testing
-cd ..
-```
-
-### Advanced Training Options
-```bash
-# Resume from checkpoint
-python train_rl.py --mode train --resume-from checkpoints/ball_balance_checkpoint_100000_steps
-
-# Train with visual rendering (slower but helpful for debugging)
-python train_rl.py --mode train --render --tensorboard
-
-# Recover from training issues
-python train_rl.py --mode recover
-```
-
-### Environment Details
-- **Observation**: Ball position (x,y), velocity (vx,vy), table angles (pitch,roll)
-- **Actions**: Table angle changes (±0.05 rad)  
-- **Reward**: Distance minimization + energy optimization + oscillation prevention
-- **Physics**: 25cm table, 2.7g ball, realistic dynamics
-
-### Current Training Status
-The RL system is designed for **simulation-to-real transfer**:
-
-- **Domain Randomization**: Ready for physics parameter variation
-- **Robust Reward Function**: Generalizes across different conditions  
-- **Checkpoint System**: Enables training recovery and model comparison
-- **TensorBoard Integration**: Comprehensive training monitoring
-
-**Next Steps for Transfer Learning:**
-- Implement domain randomization during training
-- Add realistic sensor noise and delays
-- Train with curriculum learning for robustness
-
-### Training Results
-
-The PPO training shows excellent convergence with the improved reward function:
-
-![TensorBoard Training Results](media/tensorboard_ppo_results.png)
-
-**Key Training Metrics:**
-- **Episode Reward Mean**: Steady improvement from -100 to optimal performance
-- **Evaluation Mean Reward**: Consistent high performance during evaluation phases
-- **Learning Rate**: Adaptive scheduling for stable convergence
-- **Training Steps**: 330,000+ steps with checkpoints every 10k steps
-
-The training demonstrates the effectiveness of our advanced reward engineering, with the agent learning to avoid bang-bang oscillations and achieving smooth, efficient control.
-
-## 📷 Camera Calibration
-
-The system uses blue corner markers for camera-to-table coordinate transformation:
-
-```bash
-# Interactive calibration (recommended)
-python compare_control.py --camera hybrid --calibrate
-# Choose option 1 for interactive calibration
-
-# Or run calibration separately
-python camera_calibration_color.py
-```
-
-**Calibration Process:**
-1. Setup 35×35cm base plate with 4 blue markers at corners
-2. Position RealSense camera above table
-3. Run calibration to capture marker positions
-4. System automatically calculates coordinate transformation
-
-## 🦾 Servo Integration
-
-### Hardware Configuration
-- **Servo IDs**: 1 (pitch), 2 (roll)
-- **Communication**: COM5, 1Mbps (configurable)
-- **Range**: ±3° table movement for half servo range
-- **Protocol**: Dynamixel Protocol 2.0
-
-### Kinematic Model
-```python
-# Table angle to servo position conversion
-STEPS_PER_RADIAN = 29,325  # Approximately
-servo_position = center_position + (angle_rad * STEPS_PER_RADIAN)
-```
-
-### Testing Servos
-```bash
-# Test servo functionality
-python servo_controller.py
-```
-
-## 🔬 Advanced Features
-
-### Multi-Mode Operation
-- Seamlessly switch between simulation, hybrid, and hardware modes
-- Camera calibration integrates with existing simulation
-- Servo control mirrors simulation movements
-
-### Safety Features
-- **Angle Limits**: Software limits prevent servo damage
-- **Connection Monitoring**: Automatic fallback if hardware disconnects  
-- **Calibration Validation**: Ensures reliable camera-table mapping
-
-### Performance Optimization
-- **50Hz Control Loop**: Matches servo update rates
-- **Thread-safe Visuals**: Non-blocking dashboard updates
-- **Efficient Communication**: Optimized servo commands and camera processing
+### 🔬 Training Insights
+- **Early Stopping**: Threshold set to 85% of expected reward (accounts for new reward scale)
+- **Convergence**: Slower with added realism but produces more robust policies
+- **Hardware Transfer**: IMU correction and bias randomization critical for real-world performance
+- **Oscillation Prevention**: Jerk penalties and servo rate limiting eliminate chattering
 
 ## 🚀 Development Workflow
 
 ### 1. Algorithm Development
 ```bash
-# Develop and test in pure simulation
-python compare_control.py --control pid --visuals
+# Test in pure simulation
+python compare_control.py --control pid --visuals --freq 60
 ```
 
-### 2. RL Training & Optimization
+### 2. RL Training
 ```bash
-# Navigate to RL directory and train
+# Train with full curriculum and randomization
 cd reinforcement_learning
-python train_rl.py --mode train --tensorboard
+python train_rl.py --mode train --freq 60 --tensorboard --curriculum
 cd ..
 ```
 
-### 3. Simulation-to-Real Validation
+### 3. Validation
 ```bash
-# Test trained models in simulation
-python compare_control.py --control rl --visuals
+# Test RL in simulation
+python compare_control.py --control rl --visuals --freq 60
 
-# Validate with camera integration
-python compare_control.py --camera hybrid --control rl --visuals
+# Hybrid testing with camera
+python compare_control.py --camera hybrid --control rl --visuals --freq 60
 ```
 
 ### 4. Hardware Deployment
 ```bash
-# Deploy to real hardware
-python compare_control.py --freq 60 --camera real --servos --imu --imu-port <DEVICE_NAME> --disable-camera-rendering
+# Full hardware deployment
+python compare_control.py --camera real --servos --imu --freq 60
 ```
 
-## 💡 Tips & Development Notes
+## 💡 Tips & Best Practices
 
 ### Training Considerations
-- **Control Frequency**: Match training frequency (60Hz) to hardware capabilities
-- **TensorBoard Monitoring**: Use `--tensorboard` flag for real-time training visualization
-- **Checkpoint Management**: Regular checkpoints enable training recovery and model comparison
-- **Transfer Learning**: Focus on robust simulation before hardware deployment
+- **Match frequencies**: Use 60Hz for both training and hardware
+- **Curriculum is essential**: Start with `--curriculum` flag
+- **Monitor TensorBoard**: Each run gets unique timestamp naming
+- **Expect slow convergence**: Current reward shaping prioritizes stability over speed
 
-### Simulation Accuracy
-- **Physics Realism**: Current simulation uses simplified dynamics - needs enhancement for better transfer
-- **Parameter Identification**: Real system measurements needed for accurate modeling
-- **Domain Gap**: Significant gap between simulation and reality requires domain randomization
+### Hardware Deployment
+- **IMU calibration**: Press 'c' to calibrate offsets before operation
+- **Axis alignment**: Use `--rl-swap-axes`, `--rl-invert-x/y` flags if needed
+- **Setpoint tracking**: RL automatically receives error-to-setpoint observations
+- **Bias compensation**: Training randomization handles most hardware imperfections
 
-### Performance Optimization
-- Use `--freq` to adjust control frequency based on hardware capabilities
-- Disable `--visuals` for maximum performance in deployment
-- Monitor CPU usage during camera processing and RL inference
+### Troubleshooting
+- **RL oscillation**: Increase jerk penalty weight or reduce servo speed
+- **Off-center settling**: Calibrate IMU offsets, check coordinate system alignment
+- **Sluggish response**: Verify control frequency matches training (60Hz)
+- **Poor transfer**: Ensure domain randomization covers actual hardware characteristics
 
 ## 📋 System Requirements
 
-- **Python 3.8+**
-- **PyBullet** - Physics simulation
-- **OpenCV** - Camera processing  
-- **pyrealsense2** - RealSense camera support
-- **dynamixel_sdk** - Servo control
-- **stable-baselines3** - RL algorithms
-- **matplotlib** - Real-time visualization
+**Software:**
+- Python 3.8+
+- PyBullet (physics simulation)
+- Stable-Baselines3 (SAC algorithm)
+- OpenCV (camera processing)
+- pyrealsense2 (camera interface)
+- dynamixel_sdk (servo control)
+- matplotlib (visualization)
 
-**Hardware Requirements:**
+**Hardware:**
 - Intel RealSense D435i camera
-- 2× Dynamixel servos (XM430-W350 recommended)
+- 2× Dynamixel servos (XL430-W250-T recommended)
+- BNO055 IMU sensor
 - USB-Serial interface for servos
-- 35×35cm base plate with blue corner markers
+- Ball balancing platform with markers
