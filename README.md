@@ -2,6 +2,9 @@
 
 A complete ball balancing control system featuring advanced reinforcement learning with sim-to-real transfer, PID control, and real hardware integration. The system uses PyBullet simulation, camera integration, IMU feedback, and Dynamixel servo control for robust real-world deployment.
 
+![Overall Setup](media/overall_setup.png)
+*Complete system overview showing hardware integration*
+
 ## 🎯 Key Features
 
 ### Control Methods
@@ -22,6 +25,12 @@ A complete ball balancing control system featuring advanced reinforcement learni
 - **🦾 Servo Dynamics**: Rate-limited servo movement matching real hardware (60-63Hz)
 - **📊 PID Guidance**: Reward shaping using PD baseline for stable, damped behavior
 - **🎚️ Anti-Oscillation**: Jerk penalties and velocity weighting to prevent chattering
+
+![PID Control Example](media/PID_Example.gif)
+*PID controller demonstration showing stable ball positioning*
+
+![RL Hybrid Mode with Mass Change](media/RL_hybrid_mass_change.gif)
+*RL controller adapting to mass changes in hybrid mode*
 
 ## 🚀 Quick Start
 
@@ -64,8 +73,8 @@ cd ..
 **During operation:**
 - `r` - Reset ball position
 - `f` - Toggle fixed/random ball spawn
-- `p` - Switch to PID control
-- `l` - Switch to RL control
+- `b` - Switch to PID control
+- `n` - Switch to RL control
 - `c` - Calibrate IMU offsets (hardware mode)
 - `q` - Quit
 - **Arrow keys/WASD** - Manual setpoint control
@@ -156,6 +165,12 @@ python train_rl.py --mode test --model ./models/best_model.zip
 - **Coordinate mapping**: Automatic table-to-camera transformation
 - **Modes**: Hybrid (sim physics) or Real (hardware physics)
 
+![Calibration Markers](media/Calibration_Markers.png)
+*Blue corner markers used for camera calibration*
+
+![Calibration Frame](media/CalibrationFrame.png)
+*Camera calibration interface showing marker detection*
+
 ## ⚙️ Configuration Options
 
 ### Control Flags
@@ -211,6 +226,12 @@ python train_rl.py --mode test --model ./models/best_model.zip
 ├── calibration_data/               # Camera calibration files
 └── requirements.txt                # Python dependencies
 ```
+
+![CAD Design](media/CAD.png)
+*Mechanical design showing servo actuation system*
+
+![Actuation System](media/actuation.png)
+*Servo-driven platform mechanism for precise table control*
 
 ## 🎯 Current State & Performance
 
@@ -289,7 +310,8 @@ python compare_control.py --camera real --servos --imu --freq 60
 ## 📋 System Requirements
 
 **Software:**
-- Python 3.8+
+- Python 3.8+ (on linux)
+- Python 3.11+ (on windows, else the loop time will not be quick enough)
 - PyBullet (physics simulation)
 - Stable-Baselines3 (SAC algorithm)
 - OpenCV (camera processing)

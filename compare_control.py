@@ -820,9 +820,10 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                "models/best_model",  # Check main models folder first (for backward compatibility)
-                "reinforcement_learning/models/best_model"  # New location
+                # "models/best_model",  # Check main models folder first (for backward compatibility)
+                # "reinforcement_learning/models/best_model"  # New location
                 #"reinforcement_learning/SAC_models/best_model"  # Alternative path
+                "reinforcement_learning/models/setpoint_SAC"
             ]
             
             for model_path in model_paths:
@@ -1224,10 +1225,12 @@ class BallBalanceComparison:
                 
                     
                     # For PID, these are absolute angles
-                    if self.camera_mode == "real":
+                    # In hybrid or real modes, apply immediately so hardware and PyBullet stay in sync.
+                    if self.camera_mode in ["real", "hybrid"]:
                         self.table_pitch = pitch_angle
                         self.table_roll = roll_angle
                     else:
+                        # In pure simulation, move toward targets with simulated servo dynamics
                         self.table_pitch_target = pitch_angle
                         self.table_roll_target = roll_angle
                     control_action = [pitch_angle, roll_angle]
@@ -1386,12 +1389,12 @@ class BallBalanceComparison:
                             print(f"Ball position mode: {mode}")
                             self.reset_ball(randomize=self.randomize_ball)
                             physics_step_count = 0  # Reset physics step counter
-                        elif key == ord('p'):
+                        elif key == ord('b'):
                             print("Switching to PID control")
                             self.control_method = "pid"
                             self.reset_ball(randomize=self.randomize_ball)
                             physics_step_count = 0  # Reset physics step counter
-                        elif key == ord('l'):
+                        elif key == ord('n'):
                             print("Switching to RL control")
                             if self.rl_model is not None:
                                 self.control_method = "rl"
