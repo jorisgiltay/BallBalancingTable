@@ -78,8 +78,13 @@ class BallBalanceComparison:
         self.pitch_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
         self.roll_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
 
-        # LQR CONTROLLER
-        self.lqr_controller = LQRController()
+        # LQR CONTROLLER (aggressive tuning: fast response; pairs well with IMU correction)
+        self.lqr_controller = LQRController(
+            Q=np.diag([100.0, 12.0, 100.0, 12.0]),  # higher velocity weights -> more damping
+            R=np.diag([2.0, 2.0]),                   # slightly higher control cost -> smoother
+            smoothing_alpha=0.9,                     # stronger velocity smoothing
+            servo_limit_deg=9.0,
+        )
         
         # SERVO CONTROLLER
         self.servo_controller = None
@@ -1190,7 +1195,25 @@ class BallBalanceComparison:
                         self.table_roll = 0.0
                         control_action = [0.0, 0.0]
                 elif self.control_method == "lqr":
-                    pitch_angle, roll_angle = self.lqr_controller.control(ball_x, ball_y, ball_vx, ball_vy,setpoint_x=self.setpoint_x, setpoint_y=self.setpoint_y)
+                    pitch_angle, roll_angle = self.lqr_controller.control(
+                        ball_x, ball_y, ball_vx, ball_vy,
+                        setpoint_x=self.setpoint_x, setpoint_y=self.setpoint_y
+                    )
+
+                    # IMU Feedback Correction for LQR (align intended angles with actual IMU angles)
+                    if self.imu_connected and self.imu_calibrated:
+                        actual_pitch, actual_roll = self.get_calibrated_imu_angles()
+                        pitch_error = pitch_angle - actual_pitch
+                        roll_error = roll_angle - actual_roll
+                        lqr_correction_gain = 0.2
+                        pitch_angle -= lqr_correction_gain * pitch_error
+                        roll_angle  -= lqr_correction_gain * roll_error
+                        self.imu_feedback_error = (pitch_error, roll_error)
+
+                    # Ensure within limits after correction
+                    pitch_angle = np.clip(pitch_angle, -self.control_output_limit, self.control_output_limit)
+                    roll_angle = np.clip(roll_angle, -self.control_output_limit, self.control_output_limit)
+
                     # For LQR, these are absolute angles
                     self.table_pitch = -pitch_angle
                     self.table_roll = roll_angle
