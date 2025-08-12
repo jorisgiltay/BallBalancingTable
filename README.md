@@ -5,11 +5,8 @@ A complete ball balancing control system featuring advanced reinforcement learni
 ![Overall Setup](media/overall_setup.png)
 *Complete system overview showing hardware integration*
 
-<video src="media/overall_demo.mp4" controls width="720">
-  Your browser does not support the video tag. Here is a direct link: media/overall_demo.mp4
-</video>
-
-[▶️ Download/Watch the full demo (MP4)](media/overall_demo.mp4)
+## Demo
+[![Watch the demo](https://img.youtube.com/vi/B2ETYDegp2Y/hqdefault.jpg)](https://youtu.be/B2ETYDegp2Y)
 ## 🎯 Key Features
 
 ### Control Methods
