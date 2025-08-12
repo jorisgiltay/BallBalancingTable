@@ -19,7 +19,7 @@ Author: Ball Balancing Table Project
 import numpy as np
 import cv2
 import time
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Callable
 import threading
 import queue
 import os
@@ -158,6 +158,30 @@ class RealSenseCameraInterface:
         # Latest position data
         self.latest_position = (0.0, 0.0, 0.0)
         self.position_lock = threading.Lock()
+        
+        # Optional callback when user selects a new target via mouse
+        self._on_target_update_callback: Optional[Callable[[float, float], None]] = None
+        self._on_keypress_callback: Optional[Callable[[int], None]] = None
+        self._mouse_is_down: bool = False
+        # Right-button trajectory drawing/playback
+        self._rmb_is_down: bool = False
+        self._trajectory_world: list[tuple[float, float]] = []
+        self._trajectory_pixel: list[tuple[int, int]] = []
+        self._trajectory_lock = threading.Lock()
+        self._trajectory_playback_active: bool = False
+        self._trajectory_playback_thread: Optional[threading.Thread] = None
+        self._trajectory_playback_hz: float = 30.0
+        self._trajectory_loop_enabled: bool = True
+
+        # Overlay info
+        self._overlay_control_method: str = ""
+        self._overlay_info_lock = threading.Lock()
+
+        # UI / overlay layout (bottom strip with controls)
+        self._frame_width: Optional[int] = None
+        self._frame_height: Optional[int] = None
+        self._ui_lock = threading.Lock()
+        self._ui_rects: Dict[str, Tuple[int, int, int, int]] = {}
         
         # Try to load existing calibration data
         self.load_existing_calibration()
@@ -397,6 +421,14 @@ class RealSenseCameraInterface:
         self.capture_thread.start()
         print("✅ Started continuous ball tracking")
 
+    def set_on_target_update_callback(self, callback: Callable[[float, float], None]) -> None:
+        """Register a callback invoked with (x_world, y_world) when user clicks/drags in the video window."""
+        self._on_target_update_callback = callback
+
+    def set_on_keypress_callback(self, callback: Callable[[int], None]) -> None:
+        """Register a callback invoked with raw OpenCV key codes from the camera window."""
+        self._on_keypress_callback = callback
+
     def set_target(self, x: float, y: float):
         self.target_x = x
         self.target_y = y
@@ -416,6 +448,11 @@ class RealSenseCameraInterface:
             
         try:
             import pyrealsense2 as rs
+            
+            # Prepare display window and mouse callback if rendering is enabled
+            if not self.disable_rendering:
+                cv2.namedWindow("Ball Tracking")
+                cv2.setMouseCallback("Ball Tracking", self._handle_mouse_event)
             
             while self.running:
                 # Wait for frames
@@ -511,11 +548,37 @@ class RealSenseCameraInterface:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                                 
                     
+                # Draw any trajectory (in blue)
+                try:
+                    with self._trajectory_lock:
+                        if len(self._trajectory_pixel) >= 2:
+                            pts = np.array(self._trajectory_pixel, dtype=np.int32).reshape((-1, 1, 2))
+                            # Lighter blue (BGR): more cyan-ish
+                            cv2.polylines(color_image, [pts], False, (255, 200, 100), 2)
+                except Exception:
+                    pass
+
+                # Update frame size and UI rects, then draw overlay panel as a bottom strip
+                try:
+                    h, w = color_image.shape[:2]
+                    self._frame_width, self._frame_height = w, h
+                    self._update_ui_layout(w, h)
+                    self._draw_ui(color_image)
+                except Exception:
+                    pass
+                
                 # Only show video feed if rendering is not disabled
                 if not self.disable_rendering:
                     cv2.imshow("Ball Tracking", color_image)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break  # Optionally allow quitting the feed
+                    raw_key = cv2.waitKey(1)
+                    key = raw_key & 0xFF if raw_key != -1 else -1
+                    if raw_key != -1 and self._on_keypress_callback is not None:
+                        try:
+                            self._on_keypress_callback(key)
+                        except Exception:
+                            pass
+                    elif key == ord('q'):
+                        break  # Allow quitting if no external handler is set
                 time.sleep(0.01)  # ~100 Hz capture rate
                 
         except Exception as e:
@@ -562,6 +625,256 @@ class RealSenseCameraInterface:
         if self.pipeline:
             self.pipeline.stop()
             print("✅ Camera cleaned up")
+
+    # -------------------------
+    # Mouse interaction support
+    # -------------------------
+    def _handle_mouse_event(self, event, x, y, flags, param):
+        """Convert mouse position in the displayed frame to world coords and update target.
+
+        - Left click sets a new setpoint.
+        - Dragging with left button held continuously updates the setpoint (trajectory drawing).
+        """
+        try:
+            # First, check if click is inside UI controls (consume and return)
+            if event == cv2.EVENT_LBUTTONDOWN:
+                if self._handle_ui_click(x, y):
+                    return
+
+            if event == cv2.EVENT_LBUTTONDOWN:
+                self._mouse_is_down = True
+                wx, wy = self.pixel_to_world_coordinates(float(x), float(y))
+                # Clamp to table bounds (±table_size/2 with small margin)
+                half = self.table_size / 2.0 - 0.001
+                wx = float(np.clip(wx, -half, half))
+                wy = float(np.clip(wy, -half, half))
+                self.set_target(wx, wy)
+                if self._on_target_update_callback is not None:
+                    self._on_target_update_callback(wx, wy)
+            elif event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON):
+                if self._mouse_is_down:
+                    wx, wy = self.pixel_to_world_coordinates(float(x), float(y))
+                    half = self.table_size / 2.0 - 0.001
+                    wx = float(np.clip(wx, -half, half))
+                    wy = float(np.clip(wy, -half, half))
+                    self.set_target(wx, wy)
+                    if self._on_target_update_callback is not None:
+                        self._on_target_update_callback(wx, wy)
+            elif event == cv2.EVENT_LBUTTONUP:
+                self._mouse_is_down = False
+            # Right button: draw trajectory in blue and play back after release
+            elif event == cv2.EVENT_RBUTTONDOWN:
+                # If pressing inside UI, ignore trajectory start
+                if self._point_in_rect((x, y), self._ui_rects.get('panel')):
+                    return
+                self._rmb_is_down = True
+                # Stop any previous playback and clear previous trajectory
+                self._stop_trajectory_playback()
+                with self._trajectory_lock:
+                    self._trajectory_world = []
+                    self._trajectory_pixel = []
+                    # Add first point
+                    wx, wy = self.pixel_to_world_coordinates(float(x), float(y))
+                    half = self.table_size / 2.0 - 0.001
+                    wx = float(np.clip(wx, -half, half))
+                    wy = float(np.clip(wy, -half, half))
+                    self._trajectory_world.append((wx, wy))
+                    self._trajectory_pixel.append((int(x), int(y)))
+            elif event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_RBUTTON):
+                if self._rmb_is_down:
+                    wx, wy = self.pixel_to_world_coordinates(float(x), float(y))
+                    half = self.table_size / 2.0 - 0.001
+                    wx = float(np.clip(wx, -half, half))
+                    wy = float(np.clip(wy, -half, half))
+                    with self._trajectory_lock:
+                        # Avoid excessive duplicates: only add if moved a few pixels
+                        if not self._trajectory_pixel or (abs(self._trajectory_pixel[-1][0] - x) + abs(self._trajectory_pixel[-1][1] - y)) >= 2:
+                            self._trajectory_world.append((wx, wy))
+                            self._trajectory_pixel.append((int(x), int(y)))
+            elif event == cv2.EVENT_RBUTTONUP:
+                self._rmb_is_down = False
+                # Start playback of the drawn trajectory
+                self._start_trajectory_playback()
+        except Exception:
+            # Ignore errors to keep capture loop robust
+            pass
+
+    # -------- UI helpers (bottom-right panel) --------
+    def _update_ui_layout(self, frame_w: int, frame_h: int) -> None:
+        # Bottom strip spanning width, minimal height to avoid covering table
+        margin = 6
+        panel_h = 36
+        panel_w = max(120, frame_w - 2 * margin)
+        x0 = margin
+        y0 = int(frame_h - panel_h - margin)
+        # Buttons aligned to the right within the strip
+        gap = 8
+        pad_x = 10
+        center_y = y0 + panel_h // 2
+        loop_w, loop_h = 90, 22
+        hz_btn_w, hz_btn_h = 40, 22
+        # Place from right to left: [Hz+][Hz-][Loop]
+        hz_plus_x = x0 + panel_w - pad_x - hz_btn_w
+        hz_plus_y = int(center_y - hz_btn_h / 2)
+        hz_minus_x = hz_plus_x - gap - hz_btn_w
+        hz_minus_y = hz_plus_y
+        loop_x = hz_minus_x - gap - loop_w
+        loop_y = hz_plus_y
+        loop_rect = (loop_x, loop_y, loop_w, loop_h)
+        hz_minus_rect = (hz_minus_x, hz_minus_y, hz_btn_w, hz_btn_h)
+        hz_plus_rect = (hz_plus_x, hz_plus_y, hz_btn_w, hz_btn_h)
+        # Text area occupies left side up to the loop button
+        text_rect = (x0 + pad_x, y0, max(0, loop_x - gap - (x0 + pad_x)), panel_h)
+        with self._ui_lock:
+            self._ui_rects = {
+                'panel': (x0, y0, panel_w, panel_h),
+                'text': text_rect,
+                'loop': loop_rect,
+                'hz_minus': hz_minus_rect,
+                'hz_plus': hz_plus_rect,
+            }
+
+    def _draw_ui(self, img: np.ndarray) -> None:
+        with self._ui_lock:
+            rects = dict(self._ui_rects)
+        panel = rects.get('panel')
+        if not panel:
+            return
+        x0, y0, w, h = panel
+        # Panel background (solid dark gray)
+        cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), (40, 40, 40), -1)
+        cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), (80, 80, 80), 1)
+
+        # One-line text on the left side
+        with self._overlay_info_lock:
+            method = self._overlay_control_method
+        loop_text = "ON" if self._trajectory_loop_enabled else "OFF"
+        status = f"Control: {method.upper() if method else ''} | Traj: {'PLAY' if self._trajectory_playback_active else 'IDLE'} | Loop: {loop_text} | {int(self._trajectory_playback_hz)} Hz"
+        tx, ty, tw, th = rects.get('text', (x0 + 10, y0, max(0, w - 200), h))
+        # Fit text horizontally by adjusting font scale if needed
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.5
+        thickness = 1
+        color = (220, 220, 220)
+        (text_w, text_h), _ = cv2.getTextSize(status, font, scale, thickness)
+        while text_w > max(0, tw - 4) and scale > 0.35:
+            scale -= 0.05
+            (text_w, text_h), _ = cv2.getTextSize(status, font, scale, thickness)
+        baseline_y = y0 + (h + text_h) // 2 - 2
+        cv2.putText(img, status, (tx, baseline_y), font, scale, color, thickness, cv2.LINE_AA)
+
+        # Loop toggle button
+        lx, ly, lw, lh = rects['loop']
+        loop_color = (90, 180, 90) if self._trajectory_loop_enabled else (90, 90, 90)
+        cv2.rectangle(img, (lx, ly), (lx + lw, ly + lh), loop_color, -1)
+        cv2.rectangle(img, (lx, ly), (lx + lw, ly + lh), (20, 20, 20), 1)
+        cv2.putText(img, f"Loop: {'ON' if self._trajectory_loop_enabled else 'OFF'}", (lx + 8, ly + lh - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20, 20, 20), 1)
+        # Hz buttons and text
+        mx, my, mw, mh = rects['hz_minus']
+        px, py, pw, ph = rects['hz_plus']
+        cv2.rectangle(img, (mx, my), (mx + mw, my + mh), (70, 70, 160), -1)
+        cv2.rectangle(img, (mx, my), (mx + mw, my + mh), (20, 20, 20), 1)
+        cv2.putText(img, "Hz -", (mx + 6, my + mh - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20, 20, 20), 1)
+        cv2.rectangle(img, (px, py), (px + pw, py + ph), (70, 160, 70), -1)
+        cv2.rectangle(img, (px, py), (px + pw, py + ph), (20, 20, 20), 1)
+        cv2.putText(img, "Hz +", (px + 6, py + ph - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20, 20, 20), 1)
+
+    def _handle_ui_click(self, x: int, y: int) -> bool:
+        """Return True if the click was handled by UI (and should not affect setpoints)."""
+        with self._ui_lock:
+            rects = dict(self._ui_rects)
+        if not rects:
+            return False
+        # Check loop toggle
+        if self._point_in_rect((x, y), rects.get('loop')):
+            self._trajectory_loop_enabled = not self._trajectory_loop_enabled
+            return True
+        # Hz minus
+        if self._point_in_rect((x, y), rects.get('hz_minus')):
+            new_hz = max(5.0, self._trajectory_playback_hz - 5.0)
+            self.set_trajectory_playback_rate_hz(new_hz)
+            return True
+        # Hz plus
+        if self._point_in_rect((x, y), rects.get('hz_plus')):
+            new_hz = min(60.0, self._trajectory_playback_hz + 5.0)
+            self.set_trajectory_playback_rate_hz(new_hz)
+            return True
+        # Panel area (but not a control) -> consume nothing
+        return False
+
+    @staticmethod
+    def _point_in_rect(pt: Tuple[int, int], rect: Optional[Tuple[int, int, int, int]]) -> bool:
+        if rect is None:
+            return False
+        x, y = pt
+        rx, ry, rw, rh = rect
+        return (rx <= x <= rx + rw) and (ry <= y <= ry + rh)
+
+    def _start_trajectory_playback(self):
+        # If no points, do nothing
+        with self._trajectory_lock:
+            if len(self._trajectory_world) < 2:
+                return
+        # Stop any existing playback
+        self._stop_trajectory_playback()
+        self._trajectory_playback_active = True
+        self._trajectory_playback_thread = threading.Thread(target=self._trajectory_playback_worker, daemon=True)
+        self._trajectory_playback_thread.start()
+
+    def _stop_trajectory_playback(self):
+        if self._trajectory_playback_active:
+            self._trajectory_playback_active = False
+            if self._trajectory_playback_thread is not None:
+                try:
+                    self._trajectory_playback_thread.join(timeout=0.1)
+                except Exception:
+                    pass
+            self._trajectory_playback_thread = None
+
+    def _trajectory_playback_worker(self):
+        try:
+            dt = 1.0 / max(1.0, float(self._trajectory_playback_hz))
+        except Exception:
+            dt = 0.02
+        idx = 0
+        while self._trajectory_playback_active:
+            with self._trajectory_lock:
+                total = len(self._trajectory_world)
+                if total == 0:
+                    break
+                if idx >= total:
+                    if self._trajectory_loop_enabled:
+                        idx = 0
+                    else:
+                        break
+                wx, wy = self._trajectory_world[idx]
+            # Update target and notify
+            self.set_target(wx, wy)
+            if self._on_target_update_callback is not None:
+                try:
+                    self._on_target_update_callback(wx, wy)
+                except Exception:
+                    pass
+            idx += 1
+            time.sleep(dt)
+        self._trajectory_playback_active = False
+
+    # Public configuration helpers
+    def set_overlay_control_method(self, method: str) -> None:
+        with self._overlay_info_lock:
+            self._overlay_control_method = str(method)
+
+    def set_trajectory_loop(self, enabled: bool) -> None:
+        self._trajectory_loop_enabled = bool(enabled)
+
+    def set_trajectory_playback_rate_hz(self, hz: float) -> None:
+        try:
+            hz = float(hz)
+            if hz <= 0:
+                return
+            self._trajectory_playback_hz = hz
+        except Exception:
+            pass
 
 
 # Simulation interface compatibility

@@ -160,6 +160,169 @@ class BallBalanceComparison:
                 print("📷 Camera interface initialized")
             if camera_mode == "real":
                 print("⚠️ Real camera mode - make sure PyBullet simulation represents actual table")
+            
+            # If real camera is used and rendering enabled, wire mouse to setpoint updates
+            try:
+                if hasattr(self.camera_interface, 'camera') and self.camera_interface.camera is not None:
+                    # Import type at runtime to avoid circular import types
+                    cam = self.camera_interface.camera
+                    if hasattr(cam, 'set_on_target_update_callback') and not self.disable_camera_rendering:
+                        cam.set_on_target_update_callback(lambda wx, wy: self.set_setpoint(wx, wy))
+                    # Forward CV window keypresses to our PyBullet key handling when using camera view
+                    if hasattr(cam, 'set_on_keypress_callback') and not self.disable_camera_rendering:
+                        def _cv_key_handler(k: int):
+
+                            try:
+                                # Normalize to lowercase ascii when possible
+                                ch = chr(k).lower() if 0 <= k < 256 else ''
+                            except Exception:
+                                ch = ''
+
+                            # Global controls
+                            if ch == 'q':
+                                print("Quitting...")
+                                if self.enable_visuals:
+                                    self.visual_thread_running = False
+                                if self.enable_imu:
+                                    self.imu_thread_running = False
+                                if self.servo_controller:
+                                    self.servo_controller.disconnect()
+                                if self.camera_interface:
+                                    self.camera_interface.stop_tracking()
+                                    self.camera_interface.cleanup()
+                                if self.imu_interface:
+                                    self.imu_interface.cleanup()
+                                raise SystemExit
+                            if ch == 'r':
+                                print("Resetting ball...")
+                                self.reset_ball(randomize=self.randomize_ball)
+                                return
+                            if ch == 'f':
+                                self.randomize_ball = not self.randomize_ball
+                                mode = "Random" if self.randomize_ball else "Fixed"
+                                print(f"Ball position mode: {mode}")
+                                self.reset_ball(randomize=self.randomize_ball)
+                                return
+                            if ch == 'b':
+                                print("Switching to PID control")
+                                self.control_method = "pid"
+                                try:
+                                    cam.set_overlay_control_method(self.control_method)
+                                except Exception:
+                                    pass
+                                if self.servo_controller:
+                                    kin = self.load_servo_kinematics("pid")
+                                    if kin:
+                                        self.servo_controller.update_kinematics(kin)
+                                self.reset_ball(randomize=self.randomize_ball)
+                                return
+                            if ch == 'n':
+                                print("Switching to RL control")
+                                if self.rl_model is not None:
+                                    self.control_method = "rl"
+                                    try:
+                                        cam.set_overlay_control_method(self.control_method)
+                                    except Exception:
+                                        pass
+                                    if self.servo_controller:
+                                        kin = self.load_servo_kinematics("rl")
+                                        if kin:
+                                            self.servo_controller.update_kinematics(kin)
+                                    self.reset_ball(randomize=self.randomize_ball)
+                                    print("✅ RL control activated!")
+                                else:
+                                    print("RL model not available. Attempting to load...")
+                                    self.load_rl_model()
+                                    if self.rl_model is not None:
+                                        self.control_method = "rl"
+                                        try:
+                                            cam.set_overlay_control_method(self.control_method)
+                                        except Exception:
+                                            pass
+                                        if self.servo_controller:
+                                            kin = self.load_servo_kinematics("rl")
+                                            if kin:
+                                                self.servo_controller.update_kinematics(kin)
+                                        self.reset_ball(randomize=self.randomize_ball)
+                                        print("✅ RL control activated!")
+                                    else:
+                                        print("❌ Still no RL model available")
+                                return
+
+                            # IMU calibration
+                            if ch == 'c' and getattr(self, 'imu_connected', False):
+                                print("🧭 Starting IMU calibration...")
+                                if self.calibrate_imu_offsets():
+                                    print("✅ IMU calibration completed!")
+                                else:
+                                    print("❌ IMU calibration failed!")
+                                return
+
+                            # Setpoint nudges (WASD)
+                            if ch == 'w':
+                                self.setpoint_y += 0.02
+                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                return
+                            if ch == 's':
+                                self.setpoint_y -= 0.02
+                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                return
+                            if ch == 'a':
+                                self.setpoint_x -= 0.02
+                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                return
+                            if ch == 'd':
+                                self.setpoint_x += 0.02
+                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                return
+
+                            # Preset setpoints (number keys)
+                            if ch == '7':
+                                self.set_setpoint(-0.08, 0.08); return
+                            if ch == '9':
+                                self.set_setpoint(0.08, 0.08); return
+                            if ch == '3':
+                                self.set_setpoint(0.08, -0.08); return
+                            if ch == '1':
+                                self.set_setpoint(-0.08, -0.08); return
+                            if ch == '5':
+                                self.set_setpoint(0.0, 0.0); return
+                            if ch == '4':
+                                self.set_setpoint(-0.08, 0.0); return
+                            if ch == '6':
+                                self.set_setpoint(0.08, 0.0); return
+                            if ch == '8':
+                                self.set_setpoint(0.0, 0.08); return
+                            if ch == '2':
+                                self.set_setpoint(0.0, -0.08); return
+
+                            # Circle mode controls
+                            if ch == 'i':
+                                self._circle_mode = not self._circle_mode
+                                print(f"Circle mode: {'ON' if self._circle_mode else 'OFF'}")
+                                return
+                            if ch == 'u':
+                                self.set_circle_radius(max(0.0, self._circle_radius - 0.01)); print(f"Circle radius: {self._circle_radius:.2f} m"); return
+                            if ch == 'o':
+                                self.set_circle_radius(self._circle_radius + 0.01); print(f"Circle radius: {self._circle_radius:.2f} m"); return
+                            if ch == 'k':
+                                self._invert_circle_direction = not self._invert_circle_direction; print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}"); return
+                            if ch == 'y':
+                                self._circle_speed += 0.1; print(f"Circle speed: {self._circle_speed}"); return
+                            if ch == 'p':
+                                self._circle_speed -= 0.1; print(f"Circle speed: {self._circle_speed}"); return
+
+                        cam.set_on_keypress_callback(_cv_key_handler)
+                        self._cv_key_handler_enabled = True
+                    # Set initial overlay and trajectory playback preferences
+                    if hasattr(cam, 'set_overlay_control_method'):
+                        cam.set_overlay_control_method(self.control_method)
+                    if hasattr(cam, 'set_trajectory_loop'):
+                        cam.set_trajectory_loop(True)
+                    if hasattr(cam, 'set_trajectory_playback_rate_hz'):
+                        cam.set_trajectory_playback_rate_hz(30.0)
+            except Exception:
+                pass
         elif camera_mode != "simulation":
             print(f"❌ Camera mode '{camera_mode}' requested but camera interface not available")
             self.camera_mode = "simulation"
@@ -1063,7 +1226,7 @@ class BallBalanceComparison:
         
         physics_step_count = 0  # Track physics steps
 
-        # Keyboard callback to toggle circle mode (e.g., on 'c' key release)
+        # Keyboard callback to toggle circle mode (e.g., on 'i' key release)
         def on_i_release(e):
             self._circle_mode = not self._circle_mode  # Toggle on/off
 
@@ -1135,32 +1298,34 @@ class BallBalanceComparison:
             self._circle_speed -= 0.1
             print(f"Circle speed: {self._circle_speed}")
 
-        #corners and middle
-        keyboard.on_release_key('7', on_7_release)
-        keyboard.on_release_key('9', on_9_release)
-        keyboard.on_release_key('3', on_3_release)
-        keyboard.on_release_key('1', on_1_release)
-        keyboard.on_release_key('5', on_5_release)
+        # Register global keyboard hooks unless CV window key handler is active
+        if not getattr(self, '_cv_key_handler_enabled', False):
+            # corners and middle
+            keyboard.on_release_key('7', on_7_release)
+            keyboard.on_release_key('9', on_9_release)
+            keyboard.on_release_key('3', on_3_release)
+            keyboard.on_release_key('1', on_1_release)
+            keyboard.on_release_key('5', on_5_release)
 
-        #middle parts
-        keyboard.on_release_key('4',on_4_release)
-        keyboard.on_release_key('6', on_6_release)
-        keyboard.on_release_key('8', on_8_release)
-        keyboard.on_release_key('2', on_2_release)
+            # middle parts
+            keyboard.on_release_key('4', on_4_release)
+            keyboard.on_release_key('6', on_6_release)
+            keyboard.on_release_key('8', on_8_release)
+            keyboard.on_release_key('2', on_2_release)
 
-        # circle controls
-        keyboard.on_release_key('i', on_i_release)
-        keyboard.on_release_key('u', on_u_release)
-        keyboard.on_release_key('o', on_o_release)
-        keyboard.on_release_key('k', on_k_release)
-        keyboard.on_release_key('y', on_y_release)
-        keyboard.on_release_key('p', on_p_release)
+            # circle controls
+            keyboard.on_release_key('i', on_i_release)
+            keyboard.on_release_key('u', on_u_release)
+            keyboard.on_release_key('o', on_o_release)
+            keyboard.on_release_key('k', on_k_release)
+            keyboard.on_release_key('y', on_y_release)
+            keyboard.on_release_key('p', on_p_release)
 
-        #setpoint moving
-        keyboard.on_release_key('w', on_w_release)
-        keyboard.on_release_key('s', on_s_release)
-        keyboard.on_release_key('a', on_a_release)
-        keyboard.on_release_key('d', on_d_release)
+            # setpoint moving
+            keyboard.on_release_key('w', on_w_release)
+            keyboard.on_release_key('s', on_s_release)
+            keyboard.on_release_key('a', on_a_release)
+            keyboard.on_release_key('d', on_d_release)
 
 
         while True:
@@ -1432,6 +1597,14 @@ class BallBalanceComparison:
                         elif key == ord('b'):
                             print("Switching to PID control")
                             self.control_method = "pid"
+                            # Update camera overlay
+                            try:
+                                if self.camera_interface and getattr(self.camera_interface, 'camera', None):
+                                    cam = self.camera_interface.camera
+                                    if hasattr(cam, 'set_overlay_control_method'):
+                                        cam.set_overlay_control_method(self.control_method)
+                            except Exception:
+                                pass
                             # Load PID kinematics
                             if self.servo_controller:
                                 kinematics = self.load_servo_kinematics("pid")
@@ -1443,6 +1616,14 @@ class BallBalanceComparison:
                             print("Switching to RL control")
                             if self.rl_model is not None:
                                 self.control_method = "rl"
+                                # Update camera overlay
+                                try:
+                                    if self.camera_interface and getattr(self.camera_interface, 'camera', None):
+                                        cam = self.camera_interface.camera
+                                        if hasattr(cam, 'set_overlay_control_method'):
+                                            cam.set_overlay_control_method(self.control_method)
+                                except Exception:
+                                    pass
                                 # Load RL kinematics
                                 if self.servo_controller:
                                     kinematics = self.load_servo_kinematics("rl")
@@ -1549,6 +1730,14 @@ class BallBalanceComparison:
                 print("Switching to PID control")
                 self.control_method = "pid"
                 self.last_key_press_time['b'] = time.time()
+                # Update camera overlay
+                try:
+                    if self.camera_interface and getattr(self.camera_interface, 'camera', None):
+                        cam = self.camera_interface.camera
+                        if hasattr(cam, 'set_overlay_control_method'):
+                            cam.set_overlay_control_method(self.control_method)
+                except Exception:
+                    pass
                 # Load PID kinematics
                 if self.servo_controller:
                     kinematics = self.load_servo_kinematics("pid")
@@ -1561,6 +1750,14 @@ class BallBalanceComparison:
                 if self.rl_model is not None:
                     self.control_method = "rl"
                     self.last_key_press_time['n'] = time.time()
+                    # Update camera overlay
+                    try:
+                        if self.camera_interface and getattr(self.camera_interface, 'camera', None):
+                            cam = self.camera_interface.camera
+                            if hasattr(cam, 'set_overlay_control_method'):
+                                cam.set_overlay_control_method(self.control_method)
+                    except Exception:
+                        pass
                     # Load RL kinematics
                     if self.servo_controller:
                         kinematics = self.load_servo_kinematics("rl")
