@@ -11,7 +11,7 @@ import numpy as np
 import json
 
 class ServoController:
-    def __init__(self, device_name='COM5', baudrate=1000000, servo_ids=[1, 2], kinematics_file: str = 'servo/servo_kinematics.json'):
+    def __init__(self, device_name='COM5', baudrate=1000000, servo_ids=[1, 2], kinematics_file: str = 'servo/servo_kinematics_RL.json'):
         # Setup Parameters
         self.device_name = device_name
         self.baudrate = baudrate
@@ -211,6 +211,24 @@ class ServoController:
             return True
         except Exception as e:
             print(f"❌ Servo control error: {e}")
+            return False
+
+    def update_kinematics(self, kinematics_dict):
+        """Update kinematic correction parameters from dictionary"""
+        try:
+            self.pitch_offset_rad = math.radians(float(kinematics_dict.get('pitch_offset_deg', 0.0)))
+            self.roll_offset_rad = math.radians(float(kinematics_dict.get('roll_offset_deg', 0.0)))
+            self.pitch_gain = float(kinematics_dict.get('pitch_gain', 1.0))
+            self.roll_gain = float(kinematics_dict.get('roll_gain', 1.0))
+            self.c_pr = float(kinematics_dict.get('c_pr', 0.0))
+            self.c_rp = float(kinematics_dict.get('c_rp', 0.0))
+            print("🔧 Updated kinematic corrections:")
+            print(f"   pitch_offset: {math.degrees(self.pitch_offset_rad):+.3f}°  roll_offset: {math.degrees(self.roll_offset_rad):+.3f}°")
+            print(f"   pitch_gain: {self.pitch_gain:.3f}  roll_gain: {self.roll_gain:.3f}")
+            print(f"   c_pr: {self.c_pr:+.3f}  c_rp: {self.c_rp:+.3f}")
+            return True
+        except Exception as e:
+            print(f"⚠️ Failed to update kinematic corrections: {e}")
             return False
 
     def load_kinematic_corrections(self, filename: str) -> bool:

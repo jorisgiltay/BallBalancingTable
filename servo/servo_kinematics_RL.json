@@ -1,0 +1,8 @@
+{
+    "pitch_offset_deg": 2.95,
+    "roll_offset_deg": 0.2,
+    "pitch_gain": 1.0,
+    "roll_gain": 1.0,
+    "c_pr": 0.0,
+    "c_rp": 0.0
+  }

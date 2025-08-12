@@ -94,6 +94,13 @@ def _apply_profile(underlying_env: BallBalanceEnv, profile: str):
         underlying_env.target_range = 0.0
         underlying_env.servo_speed_per_step = 0.013
         underlying_env.max_delta_angle = underlying_env.limit_angle / 2
+    elif profile == "bias_fix":
+        # Minimal change: just tiny target dither to break position bias
+        underlying_env.randomize_actuation_bias = False
+        underlying_env.randomize_target = True
+        underlying_env.target_range = 0.015  # Very small dither
+        underlying_env.servo_speed_per_step = 0.013
+        underlying_env.max_delta_angle = underlying_env.limit_angle / 2
     elif profile == "lite":
         # Medium-lite DR: modest randomization, faster actuation
         underlying_env.randomize_actuation_bias = True
@@ -497,7 +504,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="./models/ball_balance_sac_final.zip", help="Path to model for testing")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable early stopping during training")
     parser.add_argument("--resume-from", type=str, help="Resume/finetune from specific model checkpoint (.zip)")
-    parser.add_argument("--profile", choices=["none", "lite", "full"], default="full", help="Domain randomization/dynamics profile: none (clean), lite (moderate DR), full (default)")
+    parser.add_argument("--profile", choices=["none", "lite", "full", "bias_fix"], default="full", help="Domain randomization/dynamics profile: none (clean), lite (moderate DR), full (default), bias_fix (minimal target dither)")
     parser.add_argument("--finetune-steps", type=int, default=100000, help="Number of steps when finetuning from --resume-from")
     parser.add_argument("--render", action="store_true", help="Enable visual rendering during training (slower)")
     parser.add_argument("--no-render", action="store_true", help="Disable visual rendering during training (faster)")

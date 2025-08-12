@@ -9,6 +9,8 @@ import os
 import threading
 import queue
 import keyboard
+import json
+from pathlib import Path
 
 # Optional servo control
 try:
@@ -63,8 +65,10 @@ class BallBalanceComparison:
         self._invert_circle_direction = True
         self._circle_speed = 1.0
 
-
-
+        # Keyboard input handling for real camera mode
+        self.keyboard_thread_running = False
+        self.keyboard_thread = None
+        self.last_key_press_time = {}  # Track key press times to avoid rapid repeats
 
         # TIMING PARAMETERS
         self.physics_freq = 240  # Hz - physics simulation frequency
@@ -89,7 +93,17 @@ class BallBalanceComparison:
         # SERVO CONTROLLER
         self.servo_controller = None
         if self.enable_servos and SERVO_AVAILABLE:
+            # Load appropriate kinematics file based on initial control method
+            kinematics = self.load_servo_kinematics(self.control_method)
             self.servo_controller = ServoController()
+            if kinematics:
+                # Update kinematics after initialization
+                self.servo_controller.pitch_offset_rad = kinematics.get('pitch_offset', 0.0)
+                self.servo_controller.roll_offset_rad = kinematics.get('roll_offset', 0.0)
+                self.servo_controller.pitch_gain = kinematics.get('pitch_gain', 1.0)
+                self.servo_controller.roll_gain = kinematics.get('roll_gain', 1.0)
+                self.servo_controller.c_pr = kinematics.get('c_pr', 0.0)
+                self.servo_controller.c_rp = kinematics.get('c_rp', 0.0)
             # self.servo_controller.load_calibration_data()
             if self.servo_controller.connect():
                 print("✅ Servo control enabled")
@@ -825,8 +839,8 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                "reinforcement_learning/models/ball_balance_sac_final",
-                #"reinforcement_learning/SAC_models/setpoint_SAC"  # Alternative path
+                 #"reinforcement_learning/models/ball_balance_sac_finetuned_bias_fix_20250812-094058",
+                "reinforcement_learning/SAC_models/setpoint_SAC"  # Alternative path
                 #"reinforcement_learning/models/setpoint_SAC"
             ]
             
@@ -1022,6 +1036,10 @@ class BallBalanceComparison:
     
     def run_simulation(self):
         """Main simulation loop with configurable control rate"""
+        # Start keyboard listener for real camera mode
+        if self.camera_mode == "real":
+            self.start_keyboard_listener()
+
         print(f"Running simulation with {self.control_method.upper()} control")
         print(f"Control frequency: {self.control_freq} Hz")
         print(f"Physics frequency: {self.physics_freq} Hz")
@@ -1029,8 +1047,8 @@ class BallBalanceComparison:
         print("Controls:")
         print("  'r' - Reset ball")
         print("  'f' - Toggle fixed/random ball position")
-        print("  'p' - Switch to PID control")
-        print("  'l' - Switch to RL control")
+        print("  'b' - Switch to PID control")
+        print("  'n' - Switch to RL control")
         if self.imu_connected:
             print("  'c' - Calibrate IMU offsets (make table level first!)")
         print("  'q' - Quit")
@@ -1268,7 +1286,7 @@ class BallBalanceComparison:
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
                         sim_imu_pitch_error = new_table_pitch - actual_pitch
                         sim_imu_roll_error = new_table_roll - actual_roll
-                        correction_gain = 0.1
+                        correction_gain = 0.2
                         new_table_pitch -= correction_gain * sim_imu_pitch_error
                         new_table_roll  -= correction_gain * sim_imu_roll_error
                         self.imu_feedback_error = (sim_imu_pitch_error, sim_imu_roll_error)
@@ -1414,19 +1432,35 @@ class BallBalanceComparison:
                         elif key == ord('b'):
                             print("Switching to PID control")
                             self.control_method = "pid"
+                            # Load PID kinematics
+                            if self.servo_controller:
+                                kinematics = self.load_servo_kinematics("pid")
+                                if kinematics:
+                                    self.servo_controller.update_kinematics(kinematics)
                             self.reset_ball(randomize=self.randomize_ball)
                             physics_step_count = 0  # Reset physics step counter
                         elif key == ord('n'):
                             print("Switching to RL control")
                             if self.rl_model is not None:
                                 self.control_method = "rl"
+                                # Load RL kinematics
+                                if self.servo_controller:
+                                    kinematics = self.load_servo_kinematics("rl")
+                                    if kinematics:
+                                        self.servo_controller.update_kinematics(kinematics)
                                 self.reset_ball(randomize=self.randomize_ball)
                                 physics_step_count = 0  # Reset physics step counter
+                                print("✅ RL control activated!")
                             else:
                                 print("RL model not available. Attempting to load...")
                                 self.load_rl_model()
                                 if self.rl_model is not None:
                                     self.control_method = "rl"
+                                    # Load RL kinematics
+                                    if self.servo_controller:
+                                        kinematics = self.load_servo_kinematics("rl")
+                                        if kinematics:
+                                            self.servo_controller.update_kinematics(kinematics)
                                     self.reset_ball(randomize=self.randomize_ball)
                                     physics_step_count = 0  # Reset physics step counter
                                     print("✅ RL control activated!")
@@ -1480,6 +1514,108 @@ class BallBalanceComparison:
 
 
             physics_step_count += 1
+
+    def load_servo_kinematics(self, control_type="pid"):
+        """Load servo kinematics file based on control type"""
+        if control_type == "pid":
+            kinematics_file = "servo/servo_kinematics_PID.json"
+        else:  # rl or default
+            kinematics_file = "servo/servo_kinematics_RL.json"
+        
+        try:
+            with open(kinematics_file, 'r') as f:
+                kinematics = json.load(f)
+            print(f"✅ Loaded {control_type.upper()} kinematics from {kinematics_file}")
+            return kinematics
+        except FileNotFoundError:
+            print(f"⚠️ {kinematics_file} not found, using default kinematics")
+            # Return default kinematics if file doesn't exist
+            return {
+                "pitch_offset": 0.0,
+                "roll_offset": 0.0,
+                "pitch_gain": 1.0,
+                "roll_gain": 1.0,
+                "c_pr": 0.0,
+                "c_rp": 0.0
+            }
+        except Exception as e:
+            print(f"❌ Error loading kinematics from {kinematics_file}: {e}")
+            return None
+
+    def _keyboard_listener_thread(self):
+        """Background thread for keyboard input in real camera mode"""
+        def on_b_press():
+            if time.time() - self.last_key_press_time.get('b', 0) > 0.5:  # Debounce
+                print("Switching to PID control")
+                self.control_method = "pid"
+                self.last_key_press_time['b'] = time.time()
+                # Load PID kinematics
+                if self.servo_controller:
+                    kinematics = self.load_servo_kinematics("pid")
+                    if kinematics:
+                        self.servo_controller.update_kinematics(kinematics)
+
+        def on_n_press():
+            if time.time() - self.last_key_press_time.get('n', 0) > 0.5:  # Debounce
+                print("Switching to RL control")
+                if self.rl_model is not None:
+                    self.control_method = "rl"
+                    self.last_key_press_time['n'] = time.time()
+                    # Load RL kinematics
+                    if self.servo_controller:
+                        kinematics = self.load_servo_kinematics("rl")
+                        if kinematics:
+                            self.servo_controller.update_kinematics(kinematics)
+                    print("✅ RL control activated!")
+                else:
+                    print("RL model not available. Attempting to load...")
+                    self.load_rl_model()
+                    if self.rl_model is not None:
+                        self.control_method = "rl"
+                        self.last_key_press_time['n'] = time.time()
+                        # Load RL kinematics
+                        if self.servo_controller:
+                            kinematics = self.load_servo_kinematics("rl")
+                            if kinematics:
+                                self.servo_controller.update_kinematics(kinematics)
+                        print("✅ RL control activated!")
+                    else:
+                        print("❌ Still no RL model available")
+
+        def on_r_press():
+            if time.time() - self.last_key_press_time.get('r', 0) > 0.5:  # Debounce
+                print("Resetting ball...")
+                self.last_key_press_time['r'] = time.time()
+
+        def on_q_press():
+            print("Quitting...")
+            self.keyboard_thread_running = False
+
+        # Set up keyboard listeners
+        keyboard.on_press_key('b', lambda _: on_b_press())
+        keyboard.on_press_key('n', lambda _: on_n_press())
+        keyboard.on_press_key('r', lambda _: on_r_press())
+        keyboard.on_press_key('q', lambda _: on_q_press())
+
+        # Keep thread alive
+        while self.keyboard_thread_running:
+            time.sleep(0.1)
+
+    def start_keyboard_listener(self):
+        """Start keyboard listener for real camera mode"""
+        if self.camera_mode == "real" and not self.keyboard_thread_running:
+            self.keyboard_thread_running = True
+            self.keyboard_thread = threading.Thread(target=self._keyboard_listener_thread, daemon=True)
+            self.keyboard_thread.start()
+            print("🎮 Keyboard listener started for real camera mode")
+            print("   Press 'b' for PID control, 'n' for RL control, 'r' to reset, 'q' to quit")
+
+    def stop_keyboard_listener(self):
+        """Stop keyboard listener"""
+        if self.keyboard_thread_running:
+            self.keyboard_thread_running = False
+            if self.keyboard_thread:
+                self.keyboard_thread.join(timeout=1.0)
 
 
 def main():
@@ -1601,13 +1737,27 @@ def main():
     except KeyboardInterrupt:
         print("\nSimulation stopped by user")
         if hasattr(simulator, "servo_controller") and simulator.servo_controller:
+            print("Loading PID kinematics as default...")
+            # Load PID kinematics as default when Ctrl+C is pressed
+            pid_kinematics = simulator.load_servo_kinematics("pid")
+            if pid_kinematics:
+                simulator.servo_controller.update_kinematics(pid_kinematics)
             print("Returning table to level (0, 0)...")
             simulator.servo_controller.set_table_angles(0.0, 0.0)
+        # Stop keyboard listener
+        if hasattr(simulator, "stop_keyboard_listener"):
+            simulator.stop_keyboard_listener()
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
+        # Stop keyboard listener
+        if hasattr(simulator, "stop_keyboard_listener"):
+            simulator.stop_keyboard_listener()
     finally:
+        # Stop keyboard listener
+        if hasattr(simulator, "stop_keyboard_listener"):
+            simulator.stop_keyboard_listener()
         # Only disconnect if PyBullet was connected
         try:
             if args.camera != "real":
