@@ -1,8 +1,8 @@
 import os
 import glob
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
-from reinforcement_learning.ball_balance_env import BallBalanceEnv
+from ball_balance_env import BallBalanceEnv
 
 
 def find_best_checkpoint():
@@ -24,16 +24,25 @@ def find_best_checkpoint():
     return checkpoint_files
 
 
+def _ensure_zip_path(path: str) -> str:
+    """Ensure checkpoint path points to a .zip file (SB3 format)."""
+    if path.endswith('.zip'):
+        return path
+    candidate = path + '.zip'
+    return candidate if os.path.exists(candidate) else path
+
+
 def resume_training_from_checkpoint(checkpoint_path, additional_steps=50000):
     """Resume training from a specific checkpoint"""
     
+    checkpoint_path = _ensure_zip_path(checkpoint_path)
     print(f"Loading model from: {checkpoint_path}")
     
     # Load the model
-    model = PPO.load(checkpoint_path)
+    model = SAC.load(checkpoint_path)
     
     # Create fresh environments
-    env = BallBalanceEnv(render_mode="human")
+    env = BallBalanceEnv(render_mode="rgb_array")
     env = Monitor(env)
     
     eval_env = BallBalanceEnv(render_mode="rgb_array")
@@ -52,8 +61,8 @@ def resume_training_from_checkpoint(checkpoint_path, additional_steps=50000):
     )
     
     # Save the continued model
-    model.save("models/ball_balance_ppo_continued")
-    print("Continued training saved to models/ball_balance_ppo_continued.zip")
+    model.save("models/ball_balance_sac_continued")
+    print("Continued training saved to models/ball_balance_sac_continued.zip")
     
     env.close()
     eval_env.close()
@@ -121,10 +130,11 @@ def rollback_to_checkpoint():
 def test_checkpoint_performance(checkpoint_path, episodes=3):
     """Test how well a specific checkpoint performs"""
     
+    checkpoint_path = _ensure_zip_path(checkpoint_path)
     print(f"\n🧪 Testing checkpoint: {os.path.basename(checkpoint_path)}")
     
     # Load model
-    model = PPO.load(checkpoint_path)
+    model = SAC.load(checkpoint_path)
     
     # Create test environment
     env = BallBalanceEnv(render_mode="human")

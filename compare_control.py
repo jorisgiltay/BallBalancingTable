@@ -825,10 +825,9 @@ class BallBalanceComparison:
             
             # Try multiple model paths
             model_paths = [
-                # "models/best_model",  # Check main models folder first (for backward compatibility)
-                # "reinforcement_learning/models/best_model"  # New location
-                #"reinforcement_learning/SAC_models/best_model"  # Alternative path
-                "reinforcement_learning/models/setpoint_SAC"
+                "reinforcement_learning/models/ball_balance_sac_final",
+                #"reinforcement_learning/SAC_models/setpoint_SAC"  # Alternative path
+                #"reinforcement_learning/models/setpoint_SAC"
             ]
             
             for model_path in model_paths:
