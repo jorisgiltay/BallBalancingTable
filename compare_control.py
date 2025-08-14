@@ -1819,8 +1819,8 @@ def main():
     parser = argparse.ArgumentParser(description="Ball Balancing Control Comparison")
     parser.add_argument("--control", choices=["pid", "rl","lqr"], default="pid", 
                        help="Control method to start with")
-    parser.add_argument("--freq", type=int, default=50,
-                       help="Control frequency in Hz (default: 50)")
+    parser.add_argument("--freq", type=int, default=60,
+                       help="Control frequency in Hz (default: 60)")
     parser.add_argument("--visuals", action="store_true",
                        help="Enable visual dashboard in console (thread-safe)")
     parser.add_argument("--servos", action="store_true",
