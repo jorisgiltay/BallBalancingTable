@@ -5,20 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ball Balance Tuner</title>
     <style>
+      html,body{height:100%;overflow:hidden}
       body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0e0f12;color:#eee;margin:0}
-      header{padding:12px 16px;background:#151821;border-bottom:1px solid #282c34}
-      .wrap{display:flex;gap:16px;padding:16px}
-      .card{background:#14161b;border:1px solid #2a2f3a;border-radius:8px;padding:12px}
-      .left{flex:2;min-width:0}
-      .right{flex:1;min-width:320px}
+      header{padding:12px 16px;background:#151821;border-bottom:1px solid #282c34;height:60px;box-sizing:border-box}
+      .wrap{display:flex;gap:16px;padding:16px;height:calc(100vh - 60px);box-sizing:border-box;overflow:hidden}
+      .card{background:#14161b;border:1px solid #2a2f3a;border-radius:8px;padding:12px;box-sizing:border-box;overflow:hidden}
+      .left{flex:2;min-width:0;display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1fr) 18px;row-gap:12px}
+      .right{flex:1;min-width:320px;display:flex;flex-direction:column;overflow:auto}
       label{display:block;margin:6px 0 2px;color:#9fb1c9}
       input[type="number"],select{width:100%;padding:8px;border-radius:6px;border:1px solid #2c3340;background:#0e1117;color:#e6edf3}
       button{padding:8px 10px;border-radius:6px;border:1px solid #324055;background:#1a2233;color:#e6edf3;cursor:pointer}
       button:hover{background:#1f2940}
       .row{display:flex;gap:8px}
-      .chartWrap{position:relative;width:100%;height:50vh}
+      .chartWrap{position:relative;width:100%;height:100%;min-height:0}
+      .chartWrap.secondary{height:100%}
       canvas{background:#0b0d12;border:1px solid #2a2f3a;border-radius:6px;width:100%!important;height:100%!important}
       .muted{color:#9fb1c9;font-size:12px}
+      .status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .trajWrap{flex:1 1 auto;display:flex;flex-direction:column;gap:8px;margin-top:8px;overflow:hidden;align-items:center;justify-content:center;min-height:0}
+      #trajBox{width:100%;max-height:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center}
+      #traj{display:block;background:#0b0d12;border:1px solid #2a2f3a;border-radius:6px;width:100%;height:100%}
+      /* Maintain overall layout in viewport: charts equal height; right can scroll */
     </style>
   </head>
   <body>
@@ -27,14 +34,14 @@
       <div class="muted">Live setpoint vs response and on-the-fly parameter tuning</div>
     </header>
     <div class="wrap">
-      <div class="left card">
+      <div class="left card" style="display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1fr) 18px;row-gap:12px">
         <div class="chartWrap">
           <canvas id="chart"></canvas>
         </div>
-        <div class="chartWrap" style="height:40vh;margin-top:12px">
+        <div class="chartWrap secondary">
           <canvas id="angleChart"></canvas>
         </div>
-        <div class="muted" id="status" style="margin-top:8px"></div>
+        <div class="muted status" id="status"></div>
       </div>
       <div class="right card">
         <div class="row">
@@ -121,6 +128,11 @@
           <button id="apply_sp">Apply Setpoint</button>
           <button id="apply_circle">Apply Circle</button>
         </div>
+        <div class="trajWrap">
+          <div id="trajBox">
+            <canvas id="traj"></canvas>
+          </div>
+        </div>
         <hr style="border-color:#2a2f3a" />
         </div>
       </div>
@@ -132,6 +144,7 @@
 
       const chartEl = document.getElementById('chart');
       const angleChartEl = document.getElementById('angleChart');
+      const trajEl = document.getElementById('traj');
       const statusEl = document.getElementById('status');
       const methodSel = document.getElementById('method');
       const spxEl = document.getElementById('spx');
@@ -153,6 +166,7 @@
       const WINDOW_SEC = 12; // moving window length
       const dataX = { sp: [], y: [] };
       const dataY = { sp: [], y: [] };
+      const traj = { sp: [], xy: [] };
 
       const chart = new Chart(chartEl, {
         type: 'line',
@@ -209,6 +223,8 @@
         dataX.y.push({ x: t, y: x });
         dataY.sp.push({ x: t, y: spy });
         dataY.y.push({ x: t, y: y });
+        traj.sp.push({ x: spx, y: spy });
+        traj.xy.push({ x, y });
       }
 
       function addAnglePoints(t, cpDeg, apDeg, crDeg, arDeg) {
@@ -280,6 +296,87 @@
           angleChart.options.scales.x.min = tMin2;
           angleChart.options.scales.x.max = tMin2 + WINDOW_SEC;
           angleChart.update('none');
+
+          // Draw trajectory square (keep same number of points as time graphs)
+          const ctx = trajEl.getContext('2d');
+          // Use CSS-sized square box; match canvas to its CSS size to avoid growth
+          const box = document.getElementById('trajBox');
+          // Lock the square size to the box width to avoid vertical-driven resizing
+          const side = Math.floor(box.clientWidth);
+          if (side <= 0) return;
+          trajEl.width = side;
+          trajEl.height = side;
+          const w = side, h = side;
+          ctx.clearRect(0,0,w,h);
+          // 25cm table -> ±0.125m, 2cm corner radius
+          const half = 0.125;
+          const full = 2 * half;
+          const radiusM = 0.02;
+          // Pixels-per-meter scale derived from side minus padding
+          const s = (w) / full;
+          const toXY = (p) => ({
+            x: Math.round((p.x + half) * s + rectX),
+            y: Math.round((half - p.y) * s + rectY)
+          });
+          // Rounded table border
+          const drawRoundedRect = (x, y, rw, rh, r) => {
+            const rr = Math.max(1, Math.min(r, Math.min(rw, rh) / 2));
+            ctx.beginPath();
+            ctx.moveTo(x + rr, y);
+            ctx.lineTo(x + rw - rr, y);
+            ctx.quadraticCurveTo(x + rw, y, x + rw, y + rr);
+            ctx.lineTo(x + rw, y + rh - rr);
+            ctx.quadraticCurveTo(x + rw, y + rh, x + rw - rr, y + rh);
+            ctx.lineTo(x + rr, y + rh);
+            ctx.quadraticCurveTo(x, y + rh, x, y + rh - rr);
+            ctx.lineTo(x, y + rr);
+            ctx.quadraticCurveTo(x, y, x + rr, y);
+            ctx.closePath();
+          };
+          ctx.strokeStyle = '#e6edf3';
+          ctx.lineWidth = 2;
+          const rectX = Math.round((w - full * s) / 2);
+          const rectY = Math.round((h - full * s) / 2);
+          const rectW = Math.round(full * s);
+          const rectH = Math.round(full * s);
+          // Drawing complete
+          drawRoundedRect(rectX, rectY, rectW, rectH, radiusM * s);
+          ctx.stroke();
+          // Trim trajectories to visible window length
+          const maxLen = Math.min(dataX.sp.length, WINDOW_SEC*1000); // safe upper bound
+          while (traj.sp.length > maxLen) traj.sp.shift();
+          while (traj.xy.length > maxLen) traj.xy.shift();
+          // Draw setpoint path
+          if (traj.sp.length > 1) {
+            ctx.strokeStyle = '#f2cc60';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            const p0 = toXY(traj.sp[0]); ctx.moveTo(p0.x, p0.y);
+            for (let i=1;i<traj.sp.length;i++){ const p = toXY(traj.sp[i]); ctx.lineTo(p.x,p.y); }
+            ctx.stroke();
+          }
+          // Draw actual path
+          if (traj.xy.length > 1) {
+            ctx.strokeStyle = '#58a6ff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            const p0 = toXY(traj.xy[0]); ctx.moveTo(p0.x, p0.y);
+            for (let i=1;i<traj.xy.length;i++){ const p = toXY(traj.xy[i]); ctx.lineTo(p.x,p.y); }
+            ctx.stroke();
+          }
+          // Draw current ball as white circle (true scale ~1.5cm diameter)
+          if (traj.xy.length > 0) {
+            const last = traj.xy[traj.xy.length - 1];
+            const bp = toXY(last);
+            const ballRadiusPx = Math.max(3, (0.015 * 0.5) * s);
+            ctx.beginPath();
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#c9d1d9';
+            ctx.lineWidth = 1.5;
+            ctx.arc(bp.x, bp.y, ballRadiusPx, 0, Math.PI*2);
+            ctx.fill();
+            ctx.stroke();
+          }
           lastDraw = ts;
         }
         requestAnimationFrame(renderLoop);
@@ -304,6 +401,8 @@
         imuGainEl.value = val;
         ws.send(JSON.stringify({ type: 'set_imu_gain', data: { gain: val } }));
       };
+
+      // Click-to-set removed per request
     </script>
   </body>
   </html>
