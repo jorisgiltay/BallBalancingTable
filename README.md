@@ -9,6 +9,10 @@ A complete ball balancing control system featuring advanced reinforcement learni
 [![Watch the demo](https://img.youtube.com/vi/B2ETYDegp2Y/hqdefault.jpg)](https://youtu.be/B2ETYDegp2Y)
 ## 🎯 Key Features
 
+
+## Web interface to plot data and live tune controller:
+![PID Control Example](media/web_interface_example.gif)
+
 ### Control Methods
 - **🎛️ PID Control**: Well-tuned traditional controller with IMU feedback correction
 - **🤖 SAC Reinforcement Learning**: Advanced RL with curriculum learning, domain randomization, and target tracking
@@ -27,6 +31,8 @@ A complete ball balancing control system featuring advanced reinforcement learni
 - **🦾 Servo Dynamics**: Rate-limited servo movement matching real hardware (60-63Hz)
 - **📊 PID Guidance**: Reward shaping using PD baseline for stable, damped behavior
 - **🎚️ Anti-Oscillation**: Jerk penalties and velocity weighting to prevent chattering
+
+
 
 ![PID Control Example](media/PID_Example.gif)
 *PID controller demonstration showing stable ball positioning*
