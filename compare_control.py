@@ -11,6 +11,14 @@ import queue
 import keyboard
 import json
 from pathlib import Path
+from typing import Optional
+
+# Optional web interface
+try:
+    from web.web_server import WebInterface
+    WEB_AVAILABLE = True
+except Exception:
+    WEB_AVAILABLE = False
 
 # Optional servo control
 try:
@@ -43,7 +51,7 @@ class BallBalanceComparison:
     Compare PID control vs Reinforcement Learning control
     """
     
-    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False, disable_camera_rendering=False, rl_swap_axes=False, rl_invert_x=False, rl_invert_y=False):
+    def __init__(self, control_method="pid", control_freq=50, enable_visuals=False, enable_servos=False, camera_mode="simulation", enable_imu=False, imu_port="COM6", imu_control=False, disable_camera_rendering=False, rl_swap_axes=False, rl_invert_x=False, rl_invert_y=False, enable_web: bool = False, web_host: str = "127.0.0.1", web_port: int = 8765, web_rate: float = 20.0):
         self.control_method = control_method
         self.control_freq = control_freq  # Hz - control update frequency (default 50 Hz like servos)
         self.enable_visuals = enable_visuals  # Flag to enable/disable visual indicators
@@ -79,8 +87,8 @@ class BallBalanceComparison:
         self.control_output_limit = np.radians(9)
 
         # PID CONTROLLER
-        self.pitch_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
-        self.roll_pid = PIDController(kp=1.35, ki=0.0, kd=0.18, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.pitch_pid = PIDController(kp=1.75, ki=0.0, kd=0.23, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.roll_pid = PIDController(kp=1.75, ki=0.0, kd=0.23, output_limits=(-self.control_output_limit, self.control_output_limit))
 
         # LQR CONTROLLER (aggressive tuning: fast response; pairs well with IMU correction)
         self.lqr_controller = LQRController(
@@ -367,6 +375,25 @@ class BallBalanceComparison:
         self.prev_ball_pos = None  # For velocity estimation  
         self.step_count = 0
         self.randomize_ball = True  # Start with randomized positions
+        
+        # Parameter lock for safe live updates from web UI
+        self.param_lock = threading.Lock()
+
+        # IMU feedback nudge gain (applied when IMU is connected & calibrated)
+        # Used across PID, LQR and RL paths to gently align commanded vs actual angles
+        self.imu_feedback_gain = 0.15
+
+        # Web interface
+        self.web_interface: Optional[WebInterface] = None
+        if enable_web and WEB_AVAILABLE:
+            try:
+                static_dir = Path(__file__).parent / "web"
+                self.web_interface = WebInterface(host=web_host, port=int(web_port), static_dir=static_dir, broadcast_hz=web_rate)
+                self.web_interface.attach_controller(self)
+                self.web_interface.start()
+                print(f"🌐 Web UI: http://{web_host}:{web_port}/  (WS @ /ws)")
+            except Exception as e:
+                print(f"❌ Failed to start web interface: {e}")
     
     def calibrate_camera(self):
         """Calibrate camera for table detection"""
@@ -1126,6 +1153,27 @@ class BallBalanceComparison:
             except Exception as e:
                 print(f"[set_setpoint] Visual update failed: {e}")
 
+        # Also publish to web (non-blocking/throttled)
+        try:
+            if self.web_interface is not None:
+                now_t = time.time()
+                payload = {
+                    't': now_t,
+                    'step': getattr(self, 'step_count', 0),
+                    'method': self.control_method,
+                    'ball_x': float(self.prev_ball_pos[0]) if self.prev_ball_pos else 0.0,
+                    'ball_y': float(self.prev_ball_pos[1]) if self.prev_ball_pos else 0.0,
+                    'setpoint_x': self.setpoint_x,
+                    'setpoint_y': self.setpoint_y,
+                    'pitch': self.table_pitch,
+                    'roll': self.table_roll,
+                    'action': [self.table_pitch, self.table_roll],
+                    'imu': self.get_imu_feedback() if hasattr(self, 'get_imu_feedback') else {'connected': False},
+                }
+                self.web_interface.publish_sample(payload)
+        except Exception:
+            pass
+
     def set_circle_radius(self, radius):
         self._circle_radius = radius
     
@@ -1387,9 +1435,9 @@ class BallBalanceComparison:
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
                         pitch_error = pitch_angle - actual_pitch
                         roll_error = roll_angle - actual_roll
-                        lqr_correction_gain = 0.2
-                        pitch_angle -= lqr_correction_gain * pitch_error
-                        roll_angle  -= lqr_correction_gain * roll_error
+                        gain = max(0.0, float(self.imu_feedback_gain))
+                        pitch_angle -= gain * pitch_error
+                        roll_angle  -= gain * roll_error
                         self.imu_feedback_error = (pitch_error, roll_error)
 
                     # Ensure within limits after correction
@@ -1416,9 +1464,9 @@ class BallBalanceComparison:
                     
                         
                         # Apply feedback correction to reduce the error (subtract error, don't add it!)
-                        # More responsive gain to complement PID control and speed up convergence
-                        pitch_angle -= 0.08 * pitch_error  # More responsive correction (was 0.05)
-                        roll_angle -= 0.08 * roll_error
+                        gain = max(0.0, float(self.imu_feedback_gain))
+                        pitch_angle -= gain * pitch_error
+                        roll_angle  -= gain * roll_error
                 
                         
                         # Store feedback info for display
@@ -1451,9 +1499,9 @@ class BallBalanceComparison:
                         actual_pitch, actual_roll = self.get_calibrated_imu_angles()
                         sim_imu_pitch_error = new_table_pitch - actual_pitch
                         sim_imu_roll_error = new_table_roll - actual_roll
-                        correction_gain = 0.2
-                        new_table_pitch -= correction_gain * sim_imu_pitch_error
-                        new_table_roll  -= correction_gain * sim_imu_roll_error
+                        gain = max(0.0, float(self.imu_feedback_gain))
+                        new_table_pitch -= gain * sim_imu_pitch_error
+                        new_table_roll  -= gain * sim_imu_roll_error
                         self.imu_feedback_error = (sim_imu_pitch_error, sim_imu_roll_error)
 
                     # Apply (possibly corrected) new angles
@@ -1495,10 +1543,29 @@ class BallBalanceComparison:
                 # Get IMU feedback for comparison/monitoring
                 imu_feedback = self.get_imu_feedback()
                 
-                # Update visual data (thread-safe) - every 10 steps for smoother updates
-                if self.step_count % 1 == 0:
-                    distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
-                    self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, self.setpoint_x, self.setpoint_y, imu_feedback)
+                # Update visual data (thread-safe)
+                distance_from_center = np.sqrt(ball_x**2 + ball_y**2)
+                self._update_visual_data(ball_x, ball_y, ball_vx, ball_vy, distance_from_center, control_action, self.step_count, self.setpoint_x, self.setpoint_y, imu_feedback)
+
+                # Publish to web UI (throttled, non-blocking)
+                try:
+                    if self.web_interface is not None:
+                        now_t = time.time()
+                        self.web_interface.publish_sample({
+                            't': now_t,
+                            'step': self.step_count,
+                            'method': self.control_method,
+                            'ball_x': ball_x,
+                            'ball_y': ball_y,
+                            'setpoint_x': self.setpoint_x,
+                            'setpoint_y': self.setpoint_y,
+                            'pitch': self.table_pitch,
+                            'roll': self.table_roll,
+                            'action': control_action if control_action else [0.0, 0.0],
+                            'imu': imu_feedback,
+                        })
+                except Exception:
+                    pass
                 
                 # Check if ball fell off - 25cm table (radius = 0.125m)
                 # Check if ball fell off - 25cm table (radius = 0.125m)
@@ -1661,6 +1728,11 @@ class BallBalanceComparison:
                             print("Quitting...")
                             if self.enable_visuals:
                                 self.visual_thread_running = False
+                            if getattr(self, 'web_interface', None):
+                                try:
+                                    self.web_interface.stop()
+                                except Exception:
+                                    pass
                             if self.enable_imu:
                                 self.imu_thread_running = False
                             if self.servo_controller:
@@ -1839,6 +1911,11 @@ def main():
                        help="Quick check of IMU calibration accuracy (no simulation)")
     parser.add_argument("--disable-camera-rendering", action="store_true",
                        help="Disable camera feed display for better performance (keeps ball detection active)")
+    # Web UI
+    parser.add_argument("--web", action="store_true", help="Enable web UI (http + websockets)")
+    parser.add_argument("--web-host", default="127.0.0.1", help="Web UI host (default 127.0.0.1)")
+    parser.add_argument("--web-port", type=int, default=8765, help="Web UI port (default 8765)")
+    parser.add_argument("--web-rate", type=float, default=20.0, help="Websocket broadcast rate Hz (default 20)")
     # RL sim-to-real alignment flags (observation axes)
     parser.add_argument("--rl-swap-axes", action="store_true",
                        help="Swap x/y axes for RL observation (does not affect PID)")
@@ -1882,6 +1959,10 @@ def main():
         rl_swap_axes=args.rl_swap_axes,
         rl_invert_x=args.rl_invert_x,
         rl_invert_y=args.rl_invert_y,
+        enable_web=args.web and WEB_AVAILABLE,
+        web_host=args.web_host,
+        web_port=args.web_port,
+        web_rate=args.web_rate,
     )
     
     try:
@@ -1955,6 +2036,12 @@ def main():
         # Stop keyboard listener
         if hasattr(simulator, "stop_keyboard_listener"):
             simulator.stop_keyboard_listener()
+        # Stop web interface
+        try:
+            if hasattr(simulator, 'web_interface') and simulator.web_interface is not None:
+                simulator.web_interface.stop()
+        except Exception:
+            pass
         # Only disconnect if PyBullet was connected
         try:
             if args.camera != "real":
