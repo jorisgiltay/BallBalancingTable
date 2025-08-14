@@ -11,3 +11,4 @@ reportlab==4.0.4
 dynamixel-sdk==3.7.31
 scipy>=1.9,<1.12
 keyboard==0.13.5
+aiohttp==3.9.5
