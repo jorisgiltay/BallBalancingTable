@@ -20,6 +20,10 @@ A complete ball balancing control system featuring advanced reinforcement learni
 ![RL Hybrid Mode with Mass Change](media/RL_hybrid_mass_change.gif)
 *RL controller adapting to mass changes in hybrid mode*
 
+System is slightly overdamped to make sure the ball never falls off. Any big overshoot is not acceptable for control at the edges, see picture below.
+![Step responses](media/slightly_overdamped.png)
+*Step responses PID*
+
 ## 🎯 Key Features
 
 ### 🎛️ Control Methods
