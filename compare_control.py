@@ -68,10 +68,11 @@ class BallBalanceComparison:
         self.setpoint_x = 0.0
         self.setpoint_y = 0.0
         self._circle_mode = False
+        self._heart_mode = False
         self._circle_angle = 0.0
         self._circle_radius = 0.05
         self._invert_circle_direction = True
-        self._circle_speed = 1.0
+        self._circle_speed = 0.1
 
         # Keyboard input handling for real camera mode
         self.keyboard_thread_running = False
@@ -183,68 +184,53 @@ class BallBalanceComparison:
                     # Forward CV window keypresses to our PyBullet key handling when using camera view
                     if hasattr(cam, 'set_on_keypress_callback') and not self.disable_camera_rendering:
                         def _cv_key_handler(k: int):
-
                             try:
-                                # Normalize to lowercase ascii when possible
-                                ch = chr(k).lower() if 0 <= k < 256 else ''
-                            except Exception:
-                                ch = ''
-
-                            # Global controls
-                            if ch == 'q':
-                                print("Quitting...")
-                                if self.enable_visuals:
-                                    self.visual_thread_running = False
-                                if self.enable_imu:
-                                    self.imu_thread_running = False
-                                if self.servo_controller:
-                                    self.servo_controller.disconnect()
-                                if self.camera_interface:
-                                    self.camera_interface.stop_tracking()
-                                    self.camera_interface.cleanup()
-                                if self.imu_interface:
-                                    self.imu_interface.cleanup()
-                                raise SystemExit
-                            if ch == 'r':
-                                print("Resetting ball...")
-                                self.reset_ball(randomize=self.randomize_ball)
-                                return
-                            if ch == 'f':
-                                self.randomize_ball = not self.randomize_ball
-                                mode = "Random" if self.randomize_ball else "Fixed"
-                                print(f"Ball position mode: {mode}")
-                                self.reset_ball(randomize=self.randomize_ball)
-                                return
-                            if ch == 'b':
-                                print("Switching to PID control")
-                                self.control_method = "pid"
                                 try:
-                                    cam.set_overlay_control_method(self.control_method)
+                                    # Normalize to lowercase ascii when possible
+                                    ch = chr(k).lower() if 0 <= k < 256 else ''
                                 except Exception:
-                                    pass
-                                if self.servo_controller:
-                                    kin = self.load_servo_kinematics("pid")
-                                    if kin:
-                                        self.servo_controller.update_kinematics(kin)
-                                self.reset_ball(randomize=self.randomize_ball)
-                                return
-                            if ch == 'n':
-                                print("Switching to RL control")
-                                if self.rl_model is not None:
-                                    self.control_method = "rl"
+                                    ch = ''
+
+                                # Global controls
+                                if ch == 'q':
+                                    print("Quitting...")
+                                    if self.enable_visuals:
+                                        self.visual_thread_running = False
+                                    if self.enable_imu:
+                                        self.imu_thread_running = False
+                                    if self.servo_controller:
+                                        self.servo_controller.disconnect()
+                                    if self.camera_interface:
+                                        self.camera_interface.stop_tracking()
+                                        self.camera_interface.cleanup()
+                                    if self.imu_interface:
+                                        self.imu_interface.cleanup()
+                                    raise SystemExit
+                                if ch == 'r':
+                                    print("Resetting ball...")
+                                    self.reset_ball(randomize=self.randomize_ball)
+                                    return
+                                if ch == 'f':
+                                    self.randomize_ball = not self.randomize_ball
+                                    mode = "Random" if self.randomize_ball else "Fixed"
+                                    print(f"Ball position mode: {mode}")
+                                    self.reset_ball(randomize=self.randomize_ball)
+                                    return
+                                if ch == 'b':
+                                    print("Switching to PID control")
+                                    self.control_method = "pid"
                                     try:
                                         cam.set_overlay_control_method(self.control_method)
                                     except Exception:
                                         pass
                                     if self.servo_controller:
-                                        kin = self.load_servo_kinematics("rl")
+                                        kin = self.load_servo_kinematics("pid")
                                         if kin:
                                             self.servo_controller.update_kinematics(kin)
                                     self.reset_ball(randomize=self.randomize_ball)
-                                    print("✅ RL control activated!")
-                                else:
-                                    print("RL model not available. Attempting to load...")
-                                    self.load_rl_model()
+                                    return
+                                if ch == 'n':
+                                    print("Switching to RL control")
                                     if self.rl_model is not None:
                                         self.control_method = "rl"
                                         try:
@@ -258,71 +244,97 @@ class BallBalanceComparison:
                                         self.reset_ball(randomize=self.randomize_ball)
                                         print("✅ RL control activated!")
                                     else:
-                                        print("❌ Still no RL model available")
-                                return
+                                        print("RL model not available. Attempting to load...")
+                                        self.load_rl_model()
+                                        if self.rl_model is not None:
+                                            self.control_method = "rl"
+                                            try:
+                                                cam.set_overlay_control_method(self.control_method)
+                                            except Exception:
+                                                pass
+                                            if self.servo_controller:
+                                                kin = self.load_servo_kinematics("rl")
+                                                if kin:
+                                                    self.servo_controller.update_kinematics(kin)
+                                            self.reset_ball(randomize=self.randomize_ball)
+                                            print("✅ RL control activated!")
+                                        else:
+                                            print("❌ Still no RL model available")
+                                    return
 
-                            # IMU calibration
-                            if ch == 'c' and getattr(self, 'imu_connected', False):
-                                print("🧭 Starting IMU calibration...")
-                                if self.calibrate_imu_offsets():
-                                    print("✅ IMU calibration completed!")
-                                else:
-                                    print("❌ IMU calibration failed!")
-                                return
+                                # 'c' IMU calibration disabled: use camera calibration script instead
+                                if ch == 'c':
+                                    print("ℹ️ IMU calibration via 'c' is disabled. Use the camera calibration script.")
+                                    return
 
-                            # Setpoint nudges (WASD)
-                            if ch == 'w':
-                                self.setpoint_y += 0.02
-                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
-                                return
-                            if ch == 's':
-                                self.setpoint_y -= 0.02
-                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
-                                return
-                            if ch == 'a':
-                                self.setpoint_x -= 0.02
-                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
-                                return
-                            if ch == 'd':
-                                self.setpoint_x += 0.02
-                                self.set_setpoint(self.setpoint_x, self.setpoint_y)
-                                return
+                                # Setpoint nudges (WASD)
+                                if ch == 'w':
+                                    self.setpoint_y += 0.02
+                                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                    return
+                                if ch == 's':
+                                    self.setpoint_y -= 0.02
+                                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                    return
+                                if ch == 'a':
+                                    self.setpoint_x -= 0.02
+                                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                    return
+                                if ch == 'd':
+                                    self.setpoint_x += 0.02
+                                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
+                                    return
 
-                            # Preset setpoints (number keys)
-                            if ch == '7':
-                                self.set_setpoint(-0.08, 0.08); return
-                            if ch == '9':
-                                self.set_setpoint(0.08, 0.08); return
-                            if ch == '3':
-                                self.set_setpoint(0.08, -0.08); return
-                            if ch == '1':
-                                self.set_setpoint(-0.08, -0.08); return
-                            if ch == '5':
-                                self.set_setpoint(0.0, 0.0); return
-                            if ch == '4':
-                                self.set_setpoint(-0.08, 0.0); return
-                            if ch == '6':
-                                self.set_setpoint(0.08, 0.0); return
-                            if ch == '8':
-                                self.set_setpoint(0.0, 0.08); return
-                            if ch == '2':
-                                self.set_setpoint(0.0, -0.08); return
+                                # Preset setpoints (number keys)
+                                if ch == '7':
+                                    self.set_setpoint(-0.08, 0.08); return
+                                if ch == '9':
+                                    self.set_setpoint(0.08, 0.08); return
+                                if ch == '3':
+                                    self.set_setpoint(0.08, -0.08); return
+                                if ch == '1':
+                                    self.set_setpoint(-0.08, -0.08); return
+                                if ch == '5':
+                                    self.set_setpoint(0.0, 0.0); return
+                                if ch == '4':
+                                    self.set_setpoint(-0.08, 0.0); return
+                                if ch == '6':
+                                    self.set_setpoint(0.08, 0.0); return
+                                if ch == '8':
+                                    self.set_setpoint(0.0, 0.08); return
+                                if ch == '2':
+                                    self.set_setpoint(0.0, -0.08); return
 
-                            # Circle mode controls
-                            if ch == 'i':
-                                self._circle_mode = not self._circle_mode
-                                print(f"Circle mode: {'ON' if self._circle_mode else 'OFF'}")
-                                return
-                            if ch == 'u':
-                                self.set_circle_radius(max(0.0, self._circle_radius - 0.01)); print(f"Circle radius: {self._circle_radius:.2f} m"); return
-                            if ch == 'o':
-                                self.set_circle_radius(self._circle_radius + 0.01); print(f"Circle radius: {self._circle_radius:.2f} m"); return
-                            if ch == 'k':
-                                self._invert_circle_direction = not self._invert_circle_direction; print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}"); return
-                            if ch == 'y':
-                                self._circle_speed += 0.1; print(f"Circle speed: {self._circle_speed}"); return
-                            if ch == 'p':
-                                self._circle_speed -= 0.1; print(f"Circle speed: {self._circle_speed}"); return
+                                # Circle/Heart mode controls
+                                if ch == 'i':
+                                    self._circle_mode = not self._circle_mode
+                                    if self._circle_mode:
+                                        self._heart_mode = False
+                                    print(f"Circle mode: {'ON' if self._circle_mode else 'OFF'}")
+                                    return
+                                if ch == 'h':
+                                    self._heart_mode = not self._heart_mode
+                                    if self._heart_mode:
+                                        self._circle_mode = False
+                                    print(f"Heart mode: {'ON' if self._heart_mode else 'OFF'}")
+                                    return
+
+                                if ch == 'u':
+                                    self.set_circle_radius(max(0.0, self._circle_radius - 0.01)); print(f"Circle radius: {self._circle_radius:.2f} m"); return
+                                if ch == 'o':
+                                    self.set_circle_radius(self._circle_radius + 0.01); print(f"Circle radius: {self._circle_radius:.2f} m"); return
+                                if ch == 'k':
+                                    self._invert_circle_direction = not self._invert_circle_direction; print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}"); return
+                                if ch == 'y':
+                                    self._circle_speed += 0.1; print(f"Circle speed: {self._circle_speed}"); return
+                                if ch == 'p':
+                                    self._circle_speed -= 0.1; print(f"Circle speed: {self._circle_speed}"); return
+                            except SystemExit:
+                                # Re-raise to allow app to quit
+                                raise
+                            except Exception as e:
+                                # Prevent OpenCV thread from crashing on exceptions
+                                print(f"[CV key handler] Error: {e}")
 
                         cam.set_on_keypress_callback(_cv_key_handler)
                         self._cv_key_handler_enabled = True
@@ -1138,7 +1150,7 @@ class BallBalanceComparison:
         self.setpoint_y = y
         if hasattr(self, 'camera_interface') and self.camera_interface:
             self.camera_interface.set_target_position(x, y)  # Update camera interface if applicable
-        if(not self._circle_mode):
+        if not (self._heart_mode or self._circle_mode):
             print(f"Setpoint updated: ({x:.3f}, {y:.3f})")
 
         # Immediately update dashboard with new setpoint (if visuals enabled)
@@ -1264,8 +1276,9 @@ class BallBalanceComparison:
         print("  'f' - Toggle fixed/random ball position")
         print("  'b' - Switch to PID control")
         print("  'n' - Switch to RL control")
-        if self.imu_connected:
-            print("  'c' - Calibrate IMU offsets (make table level first!)")
+        print("  'i' - Toggle circle mode (WASD adjusts setpoint; U/O radius; Y/P speed; K direction)")
+        print("  'h' - Toggle heart mode (uses same controls as circle: Y/P speed; K direction)")
+        # IMU calibration via 'c' is disabled; use camera calibration script instead
         print("  'q' - Quit")
         
         if self.imu_control:
@@ -1285,7 +1298,18 @@ class BallBalanceComparison:
 
         # Keyboard callback to toggle circle mode (e.g., on 'i' key release)
         def on_i_release(e):
-            self._circle_mode = not self._circle_mode  # Toggle on/off
+            # Toggle circle mode; turn off heart mode if enabling circle
+            self._circle_mode = not self._circle_mode
+            if self._circle_mode:
+                self._heart_mode = False
+            print(f"Circle mode: {'ON' if self._circle_mode else 'OFF'}")
+
+        def on_h_release(e):
+            # Toggle heart mode; turn off circle mode if enabling heart
+            self._heart_mode = not self._heart_mode
+            if self._heart_mode:
+                self._circle_mode = False
+            print(f"Heart mode: {'ON' if self._heart_mode else 'OFF'}")
 
         
 
@@ -1348,11 +1372,11 @@ class BallBalanceComparison:
             print(f"Circle direction: {'Inverted' if self._invert_circle_direction else 'Normal'}")
 
         def on_y_release(e):
-            self._circle_speed += 0.1
+            self._circle_speed += 0.05
             print(f"Circle speed: {self._circle_speed}")
 
         def on_p_release(e):
-            self._circle_speed -= 0.1
+            self._circle_speed -= 0.05
             print(f"Circle speed: {self._circle_speed}")
 
         # Register global keyboard hooks unless CV window key handler is active
@@ -1372,6 +1396,7 @@ class BallBalanceComparison:
 
             # circle controls
             keyboard.on_release_key('i', on_i_release)
+            keyboard.on_release_key('h', on_h_release)
             keyboard.on_release_key('u', on_u_release)
             keyboard.on_release_key('o', on_o_release)
             keyboard.on_release_key('k', on_k_release)
@@ -1581,17 +1606,37 @@ class BallBalanceComparison:
                 # Use square bounds for a 24cm x 24cm table (±0.12m)
                 ball_fell = (abs(ball_x) > 0.12 or abs(ball_y) > 0.12) and ball_z < 0.5
 
-                if self._circle_mode:
-                    # 2π radians per 5 seconds at 60Hz: increment = 2π / (60*5)
-                    increment = self._circle_speed * 2 * np.pi / 60
+                if self._circle_mode or self._heart_mode:
+                    # Advance parametric angle based on speed setting
+                    # Use control frequency for time base; speed scales cycles per second
+                    increment = (self._circle_speed / max(1.0, float(self.control_freq))) * 2 * np.pi
                     if self._invert_circle_direction:
                         self._circle_angle -= increment
                     else:
                         self._circle_angle += increment
-                    radius = self._circle_radius  # or whatever radius you want
-                    self.setpoint_x = radius * np.cos(self._circle_angle)
-                    self.setpoint_y = radius * np.sin(self._circle_angle)
-                    self.set_setpoint(self.setpoint_x, self.setpoint_y)
+
+                    if self._circle_mode:
+                        # Circle: radius-scaled unit circle
+                        radius = self._circle_radius
+                        x = radius * np.cos(self._circle_angle)
+                        y = radius * np.sin(self._circle_angle)
+                    else:
+                        # Heart curve, normalized to fit table and scaled like circle radius
+                        t = self._circle_angle
+                        hx = 16.0 * (np.sin(t) ** 3)
+                        hy = 13.0 * np.cos(t) - 5.0 * np.cos(2.0 * t) - 2.0 * np.cos(3.0 * t) - np.cos(4.0 * t)
+                        # Normalize heart to unit box then scale by radius
+                        # Typical ranges: hx in [-16,16], hy in roughly [-17, 13]
+                        hx_norm = hx / 16.0
+                        hy_norm = hy / 17.0
+                        radius = self._circle_radius
+                        x = radius * hx_norm
+                        y = radius * hy_norm
+
+                    # Clamp to table bounds (±0.12 m)
+                    x = float(np.clip(x, -0.12, 0.12))
+                    y = float(np.clip(y, -0.12, 0.12))
+                    self.set_setpoint(x, y)
 
                 if ball_fell and not self._ball_reset:
                     print(f"Ball fell off after {self.step_count} control steps. Resetting...")
