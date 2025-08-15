@@ -87,8 +87,8 @@ class BallBalanceComparison:
         self.control_output_limit = np.radians(9)
 
         # PID CONTROLLER
-        self.pitch_pid = PIDController(kp=1.75, ki=0.0, kd=0.23, output_limits=(-self.control_output_limit, self.control_output_limit))
-        self.roll_pid = PIDController(kp=1.75, ki=0.0, kd=0.23, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.pitch_pid = PIDController(kp=2.1, ki=0.0, kd=1, output_limits=(-self.control_output_limit, self.control_output_limit))
+        self.roll_pid = PIDController(kp=2.1, ki=0.0, kd=1, output_limits=(-self.control_output_limit, self.control_output_limit))
 
         # LQR CONTROLLER (aggressive tuning: fast response; pairs well with IMU correction)
         self.lqr_controller = LQRController(
@@ -105,13 +105,17 @@ class BallBalanceComparison:
             kinematics = self.load_servo_kinematics(self.control_method)
             self.servo_controller = ServoController()
             if kinematics:
-                # Update kinematics after initialization
-                self.servo_controller.pitch_offset_rad = kinematics.get('pitch_offset', 0.0)
-                self.servo_controller.roll_offset_rad = kinematics.get('roll_offset', 0.0)
-                self.servo_controller.pitch_gain = kinematics.get('pitch_gain', 1.0)
-                self.servo_controller.roll_gain = kinematics.get('roll_gain', 1.0)
-                self.servo_controller.c_pr = kinematics.get('c_pr', 0.0)
-                self.servo_controller.c_rp = kinematics.get('c_rp', 0.0)
+                # Apply kinematics using the controller's API (handles deg->rad conversion)
+                try:
+                    self.servo_controller.update_kinematics(kinematics)
+                except Exception:
+                    # Fallback to direct assignment if API not available
+                    self.servo_controller.pitch_offset_rad = kinematics.get('pitch_offset', 0.0)
+                    self.servo_controller.roll_offset_rad = kinematics.get('roll_offset', 0.0)
+                    self.servo_controller.pitch_gain = kinematics.get('pitch_gain', 1.0)
+                    self.servo_controller.roll_gain = kinematics.get('roll_gain', 1.0)
+                    self.servo_controller.c_pr = kinematics.get('c_pr', 0.0)
+                    self.servo_controller.c_rp = kinematics.get('c_rp', 0.0)
             # self.servo_controller.load_calibration_data()
             if self.servo_controller.connect():
                 print("✅ Servo control enabled")
@@ -381,7 +385,7 @@ class BallBalanceComparison:
 
         # IMU feedback nudge gain (applied when IMU is connected & calibrated)
         # Used across PID, LQR and RL paths to gently align commanded vs actual angles
-        self.imu_feedback_gain = 0.15
+        self.imu_feedback_gain = 0.02
 
         # Web interface
         self.web_interface: Optional[WebInterface] = None
@@ -1273,6 +1277,11 @@ class BallBalanceComparison:
             print(f"Ball position mode: {'Random' if self.randomize_ball else 'Fixed'}")
         
         physics_step_count = 0  # Track physics steps
+        # In real hardware mode, run control every loop iteration
+        if self.camera_mode == "real":
+            self.physics_steps_per_control = 1
+        # Initialize timer for 100-step average loop frequency logging
+        self._loop_freq_t0 = time.perf_counter()
 
         # Keyboard callback to toggle circle mode (e.g., on 'i' key release)
         def on_i_release(e):
@@ -1644,6 +1653,17 @@ class BallBalanceComparison:
                     print(status_line)
                 
                 self.step_count += 1
+                # Every 100 control steps, log the average achieved control frequency
+                if self.step_count % 100 == 0:
+                    # Initialize starting timestamp if missing
+                    if not hasattr(self, '_loop_freq_t0'):
+                        self._loop_freq_t0 = time.perf_counter()
+                    now_freq_t = time.perf_counter()
+                    duration_100 = now_freq_t - self._loop_freq_t0
+                    if duration_100 > 0:
+                        avg_hz_100 = 100.0 / duration_100
+                        print(f"[Loop] Avg control freq over last 100 steps: {avg_hz_100:.1f} Hz")
+                    self._loop_freq_t0 = now_freq_t
             
             # Handle keyboard input (check every physics step for responsiveness)
             if self.camera_mode != "real":
@@ -1757,13 +1777,11 @@ class BallBalanceComparison:
                 elapsed = time.perf_counter() - start_time
                 time.sleep(max(0, self.control_dt - elapsed))
             else:
-                # In real mode, just sleep at control frequency
-                 # Calculate elapsed time and sleep the remainder
-                # elapsed = time.perf_counter() - start_time
-                # sleep_time = self.control_dt - elapsed
-                # if sleep_time > 0:
-                #     time.sleep(sleep_time)
-                time.sleep(self.control_dt)
+                # In real mode, sleep the remainder of the control period
+                elapsed = time.perf_counter() - start_time
+                sleep_time = self.control_dt - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
 
             physics_step_count += 1
